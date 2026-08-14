@@ -9,7 +9,10 @@ session for any card — with live session status badges on the board.
 ## Features
 
 - Issues fetched by JQL, shown in three status-category columns
-  (To Do / In Progress / Done) — works across projects with custom workflows
+  (To Do / In Progress / Done) — works across projects with custom workflows.
+  By default the board shows your open issues plus issues completed within
+  the last 7 days (older Done cards drop off automatically; customizable
+  via the `jql` config option)
 - Move cards with drag & drop or `←` `→` keys, then confirm with `Enter`
   to run the Jira transition (a picker appears when several transitions apply)
 - `Enter` on a card launches a Claude Code session for that issue in a new
