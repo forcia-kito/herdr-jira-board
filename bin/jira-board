@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="${HERDR_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+
+if command -v uv >/dev/null 2>&1; then
+    exec uv run --quiet "$ROOT/src/board.py" "$@"
+elif [ -x "$ROOT/.venv/bin/python" ]; then
+    exec "$ROOT/.venv/bin/python" "$ROOT/src/board.py" "$@"
+else
+    echo "error: no Python environment found." >&2
+    echo "Install uv (https://docs.astral.sh/uv/), or run: $ROOT/bin/setup" >&2
+    exit 1
+fi

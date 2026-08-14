@@ -1,0 +1,37 @@
+# herdr-jira-board — Jira kanban board inside herdr, with Claude session launcher.
+#
+# Config file: config.toml in `herdr plugin config-dir jira-board`
+# or ~/.config/herdr-jira-board/config.toml (see README.md / config.toml.example)
+id = "jira-board"
+name = "jira-board"
+version = "0.1.0"
+description = "Jira kanban board with Claude session launcher and live agent status"
+min_herdr_version = "0.7.5"
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["bash", "bin/setup"]
+
+[[actions]]
+id = "open-board"
+title = "Open Jira board"
+command = ["bash", "-c", "exec herdr plugin pane open --plugin jira-board --entrypoint board"]
+contexts = ["workspace"]
+
+[[actions]]
+id = "close-other-tabs"
+title = "Close other tabs"
+command = ["bash", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/close-tabs\" other"]
+contexts = ["tab"]
+
+[[actions]]
+id = "close-right-tabs"
+title = "Close tabs to the right"
+command = ["bash", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/close-tabs\" right"]
+contexts = ["tab"]
+
+[[panes]]
+id = "board"
+title = "Jira Board"
+command = ["bash", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/jira-board\""]
+placement = "tab"

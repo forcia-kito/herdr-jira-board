@@ -1,0 +1,32 @@
+# herdr-jira-board configuration
+#
+# Copy this file to one of (checked in this order):
+#   1. `herdr plugin config-dir jira-board`  (usually ~/.config/herdr/plugins/config/jira-board/config.toml)
+#   2. ~/.config/herdr-jira-board/config.toml
+
+# Your Jira Cloud site URL.
+site = "https://your-site.atlassian.net"
+
+# The email address of your Atlassian account.
+email = "you@example.com"
+
+# API token created at https://id.atlassian.com/manage-profile/security/api-tokens
+# (choose the classic "Create API token", not "with scopes").
+api_token = ""
+
+# Alternatively, run a command to fetch the token (stdout is used).
+# Safer than storing the token in this file.
+# api_token_cmd = "security find-generic-password -s jira-api-token -w"
+
+# Optional: JQL for the issues shown on the board.
+# Default: your open issues plus issues completed in the last 7 days.
+# jql = "assignee = currentUser() AND (statusCategory != Done OR updated >= -7d) ORDER BY updated DESC"
+
+# Optional: UI language, "en" or "ja". Omit to follow the system locale
+# (LC_ALL / LC_MESSAGES / LANG).
+# language = "en"
+
+# Optional: working directory for Claude sessions, per Jira project key.
+# Defaults to your home directory when not set.
+[project_dirs]
+# PROJ = "~/repos/proj"

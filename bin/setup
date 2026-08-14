@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Prepare the Python environment for herdr-jira-board.
+# Run automatically by `herdr plugin install` (see [[build]] in herdr-plugin.toml).
+#
+# - If uv is available, nothing to do: `uv run` resolves dependencies at launch.
+# - Otherwise create .venv with python3 (3.11+) and install the dependencies.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+if command -v uv >/dev/null 2>&1; then
+    echo "uv found: dependencies will be resolved automatically at launch."
+    exit 0
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "error: neither uv nor python3 was found." >&2
+    echo "Install uv (https://docs.astral.sh/uv/) or Python 3.11+ and re-run: bin/setup" >&2
+    exit 1
+fi
+
+if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)'; then
+    echo "error: python3 is older than 3.11 ($(python3 -V))." >&2
+    echo "Install uv (https://docs.astral.sh/uv/) or Python 3.11+ and re-run: bin/setup" >&2
+    exit 1
+fi
+
+echo "uv not found: creating $ROOT/.venv with $(python3 -V) ..."
+python3 -m venv "$ROOT/.venv"
+"$ROOT/.venv/bin/pip" install --quiet --upgrade pip
+"$ROOT/.venv/bin/pip" install --quiet "textual>=0.80" "httpx>=0.27"
+echo "done: dependencies installed into $ROOT/.venv"
