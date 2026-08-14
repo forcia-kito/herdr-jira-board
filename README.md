@@ -6,6 +6,8 @@ session for any card — with live session status badges on the board.
 
 日本語版は [README.ja.md](README.ja.md) を参照してください。
 
+![demo](demo/demo.gif)
+
 ## Features
 
 - Issues fetched by JQL, shown in three status-category columns

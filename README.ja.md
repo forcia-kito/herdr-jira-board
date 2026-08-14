@@ -6,6 +6,8 @@ herdr プラグイン。セッションの状態バッジが看板上でライ�
 
 English version: [README.md](README.md)
 
+![demo](demo/demo.gif)
+
 ## 機能
 
 - JQL で取得した課題をステータスカテゴリ3列 (To Do / In Progress / Done) で表示

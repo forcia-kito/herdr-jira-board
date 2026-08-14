@@ -207,7 +207,11 @@ class Jira:
         self.cfg = cfg
         self.http = httpx.Client(
             base_url=cfg.site, auth=(cfg.email, cfg.api_token), timeout=30,
-            headers={"Accept": "application/json"},
+            headers={"Accept": "application/json",
+                     # Ask Jira for status/transition names in the UI language
+                     # instead of the Jira account's profile language.
+                     "Accept-Language": LANG,
+                     "X-Force-Accept-Language": "true"},
         )
 
     def search(self) -> list[Issue]:
@@ -333,9 +337,14 @@ def launch_claude(issue: Issue, cfg: Config) -> str:
             herdr("agent", "prompt", str(pane_id), prompt, "--wait", "--until", "working",
                   "--timeout", "30000")
         except subprocess.CalledProcessError:
-            # If the prompt was swallowed, resend once
-            herdr("agent", "prompt", str(pane_id), prompt, "--wait", "--until", "working",
-                  "--timeout", "30000")
+            # The text usually lands but the submitting Enter can be swallowed.
+            # Give the agent a moment, then press Enter instead of resending the
+            # text (a resend would duplicate the prompt in the composer).
+            try:
+                herdr("agent", "wait", str(pane_id), "--until", "working", "--timeout", "10000")
+            except subprocess.CalledProcessError:
+                herdr("agent", "send-keys", str(pane_id), "enter")
+                herdr("agent", "wait", str(pane_id), "--until", "working", "--timeout", "30000")
     except subprocess.CalledProcessError as e:
         # Don't leave the empty tab behind on failure
         tab_id = find_key(tab, "tab_id")
@@ -405,10 +414,13 @@ class TransitionPicker(ModalScreen[str | None]):
         self.transitions = transitions
 
     def compose(self) -> ComposeResult:
+        # Append the transition name only when two candidates share the same
+        # target status and the label alone would be ambiguous.
+        targets = [tr["to"]["name"] for tr in self.transitions]
+
         def label(tr: dict) -> str:
             base = f"{self.issue.status} → {tr['to']['name']}"
-            # Append the transition name only when it differs from the target status
-            if tr["name"] != tr["to"]["name"]:
+            if targets.count(tr["to"]["name"]) > 1:
                 base += f"  [dim]({tr['name']})[/]"
             return base
 
