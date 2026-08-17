@@ -18,15 +18,18 @@ def test_load_minimal(tmp_path):
     assert cfg.email == "you@example.com"
     assert cfg.api_token == "tok"
     assert "assignee = currentUser()" in cfg.jql  # default JQL
+    assert cfg.exclude_statuses == []
     assert cfg.project_dirs == {}
 
 
 def test_load_full(tmp_path):
     cfg = board.Config.load(write(
         tmp_path,
-        BASE + 'api_token = "tok"\njql = "project = X"\n[project_dirs]\nX = "~/x"\n',
+        BASE + 'api_token = "tok"\njql = "project = X"\n'
+        'exclude_statuses = ["Resolved"]\n[project_dirs]\nX = "~/x"\n',
     ))
     assert cfg.jql == "project = X"
+    assert cfg.exclude_statuses == ["Resolved"]
     assert cfg.project_dirs == {"X": "~/x"}
 
 

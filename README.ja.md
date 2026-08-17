@@ -57,8 +57,8 @@ email = "you@example.com"
 api_token = "<API トークン>"
 ```
 
-すべてのオプション（`api_token_cmd`, `jql`, `language`, `[project_dirs]`）は
-`config.toml.example` のコメントを参照してください。
+すべてのオプション（`api_token_cmd`, `jql`, `exclude_statuses`, `language`,
+`[project_dirs]`）は `config.toml.example` のコメントを参照してください。
 
 ## 使い方
 
