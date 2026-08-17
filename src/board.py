@@ -50,6 +50,7 @@ def resolve_config_path() -> Path:
 CONFIG_PATH = resolve_config_path()
 STATE_DIR = Path(os.environ.get("HERDR_PLUGIN_STATE_DIR") or Path.home() / ".local/share/herdr-jira-board")
 SESSIONS_PATH = STATE_DIR / "sessions.json"
+COMPANION_PATH = STATE_DIR / "companion.json"
 
 
 # ---------------------------------------------------------------- i18n
@@ -113,14 +114,29 @@ MESSAGES: dict[str, dict[str, str]] = {
                   "ja": "pane {pane} の tab_id を特定できません"},
     "herdr_failed": {"en": "{command} failed: {detail}", "ja": "{command} が失敗: {detail}"},
     "handoff": {
-        "en": ("Claude Code sessions are open next to the board; their transcripts are:\n"
+        "en": ("Claude Code sessions linked to the board; their transcripts are:\n"
                "{transcripts}\n"
                "They may already hold work on this issue. Don't read them whole — grep them "
                "for {key} first and read only what matches, then carry that over."),
-        "ja": ("同じタブで開いている Claude Code セッションの記録があります:\n"
+        "ja": ("ボードに紐づいている Claude Code セッションの記録があります:\n"
                "{transcripts}\n"
                "この課題に関するやり取りが含まれている可能性があります。全部は読まず、"
                "まず {key} で grep して、該当する部分だけ読んで引き継いでください。"),
+    },
+    "companion": {"en": "Companion session", "ja": "相棒セッション"},
+    "companion_opening": {"en": "Opening the companion session…",
+                          "ja": "相棒セッションを開いています…"},
+    "companion_opened": {"en": "The companion session is ready",
+                         "ja": "相棒セッションを開きました"},
+    "companion_resumed": {"en": "Resumed the companion session",
+                          "ja": "相棒セッションを再開しました"},
+    "companion_failed": {"en": "Failed to open the companion session: {error}",
+                         "ja": "相棒セッションを開けません: {error}"},
+    "companion_focus_failed": {"en": "Cannot focus the companion session: {error}",
+                               "ja": "相棒セッションへ移動できません: {error}"},
+    "no_pane_env": {
+        "en": "HERDR_PANE_ID is unset; the board has to run as a herdr plugin pane for this.",
+        "ja": "HERDR_PANE_ID がありません（この機能は herdr のプラグインペインとしての起動が必要です）。",
     },
     "initial_prompt": {
         "en": ("Let's work on Jira issue {key}.\n"
@@ -212,6 +228,19 @@ def load_sessions() -> dict[str, str]:
 def save_sessions(data: dict[str, str]) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     SESSIONS_PATH.write_text(json.dumps(data, indent=1))
+
+
+def load_companion() -> str:
+    """Claude session id of the board's companion session ("" when there is none)."""
+    try:
+        return str(json.loads(COMPANION_PATH.read_text()).get("session_id") or "")
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
+def save_companion(session_id: str) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    COMPANION_PATH.write_text(json.dumps({"session_id": session_id}, indent=1))
 
 
 # ---------------------------------------------------------------- jira client
@@ -343,30 +372,110 @@ def find_session_pane(key: str) -> str | None:
     return None
 
 
-def neighbor_sessions() -> list[dict[str, str]]:
-    """Claude panes sharing the board's tab, as {pane_id, session_id, cwd}.
-
-    herdr exports HERDR_PANE_ID / HERDR_TAB_ID to the plugin pane, so the board
-    can tell which panes sit next to it.
-    """
-    tab_id = os.environ.get("HERDR_TAB_ID")
-    own_pane = os.environ.get("HERDR_PANE_ID")
-    if not tab_id:
-        return []
+def claude_panes() -> list[dict[str, str]]:
+    """Every pane running Claude, as {pane_id, tab_id, session_id, cwd}."""
     try:
         panes = find_key(herdr("pane", "list"), "panes") or []
     except (subprocess.CalledProcessError, OSError):
         return []
     out = []
     for pane in panes:
-        if not isinstance(pane, dict) or pane.get("tab_id") != tab_id:
-            continue
-        if pane.get("pane_id") == own_pane or pane.get("agent") != "claude":
+        if not isinstance(pane, dict) or pane.get("agent") != "claude":
             continue
         if session := (pane.get("agent_session") or {}).get("value"):
             out.append({"pane_id": str(pane.get("pane_id") or ""),
+                        "tab_id": str(pane.get("tab_id") or ""),
                         "session_id": str(session), "cwd": str(pane.get("cwd") or "")})
     return out
+
+
+def neighbor_sessions() -> list[dict[str, str]]:
+    """The sessions a launched one inherits from.
+
+    That is the companion session wherever it sits, plus any other Claude pane in
+    the board's own tab (herdr exports HERDR_PANE_ID / HERDR_TAB_ID to the plugin
+    pane, so the board can tell which panes sit next to it).
+    """
+    own_pane = os.environ.get("HERDR_PANE_ID")
+    tab_id = os.environ.get("HERDR_TAB_ID")
+    companion = load_companion()
+    return [pane for pane in claude_panes()
+            if pane["pane_id"] != own_pane
+            and (pane["session_id"] == companion or (tab_id and pane["tab_id"] == tab_id))]
+
+
+def companion_pane() -> dict[str, str] | None:
+    """The companion session's pane, when that session is still running."""
+    if not (session_id := load_companion()):
+        return None
+    return next((p for p in claude_panes() if p["session_id"] == session_id), None)
+
+
+def companion_cwd() -> str:
+    """Where the companion session starts: the workspace's directory, else home."""
+    try:
+        context = json.loads(os.environ.get("HERDR_PLUGIN_CONTEXT_JSON") or "{}")
+    except ValueError:
+        context = {}
+    cwd = str(context.get("workspace_cwd") or "")
+    # a workspace can outlive its directory (a removed worktree, for instance)
+    return cwd if cwd and Path(cwd).is_dir() else os.path.expanduser("~")
+
+
+def start_claude(pane_id: str, name: str, *agent_args: str) -> dict:
+    """Start Claude in a fresh pane, retrying while its shell is still coming up."""
+    args = ["agent", "start", name, "--kind", "claude", "--pane", pane_id, "--timeout", "60000"]
+    if agent_args:
+        args += ["--", *agent_args]
+    for attempt in range(20):
+        try:
+            return herdr(*args)
+        except subprocess.CalledProcessError as e:
+            # Right after the pane is created its shell may not be up yet and agent
+            # start fails with agent_pane_busy ("not an available shell"); retry.
+            if attempt < 19 and "agent_pane_busy" in ((e.stdout or "") + (e.stderr or "")):
+                time.sleep(0.5)
+                continue
+            raise
+    return {}
+
+
+def open_companion() -> bool:
+    """Put the companion session in a pane beside the board. True when it resumed.
+
+    The recorded session is resumed so the same conversation comes back after its
+    pane, or the board, was closed; a session Claude no longer knows starts fresh.
+    """
+    own_pane = os.environ.get("HERDR_PANE_ID")
+    if not own_pane:
+        raise RuntimeError(t("no_pane_env"))
+    pane = herdr("pane", "split", own_pane, "--direction", "right",
+                 "--cwd", companion_cwd(), "--no-focus")
+    pane_id = find_key(pane, "pane_id")
+    if not pane_id:
+        raise RuntimeError(t("no_pane_id", data=pane))
+    name = f"companion-{str(pane_id).split(':')[-1].lower()}"
+    resumed = False
+    try:
+        if session_id := load_companion():
+            try:
+                started = start_claude(str(pane_id), name, "--resume", session_id)
+                resumed = True
+            except subprocess.CalledProcessError:
+                started = start_claude(str(pane_id), name)
+        else:
+            started = start_claude(str(pane_id), name)
+    except subprocess.CalledProcessError as e:
+        # Don't leave the empty pane behind on failure
+        try:
+            herdr("pane", "close", str(pane_id))
+        except subprocess.CalledProcessError:
+            pass
+        detail = (e.stderr or e.stdout or "").strip()[:200]
+        raise RuntimeError(t("herdr_failed", command=" ".join(e.cmd[1:3]), detail=detail)) from e
+    if session := (find_key(started, "agent_session") or {}).get("value"):
+        save_companion(str(session))
+    return resumed
 
 
 def transcript_path(session_id: str) -> Path | None:
@@ -410,18 +519,7 @@ def launch_claude(issue: Issue, cfg: Config) -> str:
         raise RuntimeError(t("no_pane_id", data=tab))
     try:
         agent_name = f"{issue.key.lower()}-{str(pane_id).split(':')[-1].lower()}"
-        # Right after tab create the pane's shell may not be up yet and agent
-        # start fails with agent_pane_busy ("not an available shell"); retry.
-        for attempt in range(20):
-            try:
-                herdr("agent", "start", agent_name, "--kind", "claude", "--pane", str(pane_id),
-                      "--timeout", "60000")
-                break
-            except subprocess.CalledProcessError as e:
-                if attempt < 19 and "agent_pane_busy" in ((e.stdout or "") + (e.stderr or "")):
-                    time.sleep(0.5)
-                    continue
-                raise
+        start_claude(str(pane_id), agent_name)
         # Claude may not accept input immediately after start; wait until it is
         # idle (prompt ready), then send and confirm the working transition.
         herdr("agent", "wait", str(pane_id), "--until", "idle", "--timeout", "60000")
@@ -595,6 +693,7 @@ class BoardApp(App):
         Binding("enter", "confirm_or_launch", t("confirm_or_launch")),
         Binding("escape", "cancel_move", t("cancel_or_unfocus"), show=False),
         Binding("o", "open_browser", t("open_browser")),
+        Binding("c", "companion", t("companion")),
         Binding("down", "focus_next", t("next_card"), show=False),
         Binding("up", "focus_previous", t("prev_card"), show=False),
         Binding("q", "quit", t("quit")),
@@ -607,6 +706,7 @@ class BoardApp(App):
         self.sessions = load_sessions()
         self._launching: set[str] = set()
         self._moving = False
+        self._opening_companion = False
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -771,6 +871,39 @@ class BoardApp(App):
             return False
         self.notify(t("moved", key=key))
         return True
+
+    # ---- companion session
+
+    def action_companion(self) -> None:
+        """Open (or go to) the session the launched ones inherit from."""
+        if self._opening_companion:
+            self.notify(t("companion_opening"))
+            return
+        self._opening_companion = True
+        self.run_companion()
+
+    @work(thread=True)
+    def run_companion(self) -> None:
+        try:
+            if pane := companion_pane():
+                self.focus_pane(pane["pane_id"])
+                return
+            self.call_from_thread(self.notify, t("companion_opening"))
+            resumed = open_companion()
+        except Exception as e:  # noqa: BLE001
+            self.call_from_thread(self.notify, t("companion_failed", error=e), severity="error")
+            return
+        finally:
+            self._opening_companion = False
+        self.call_from_thread(
+            self.notify, t("companion_resumed") if resumed else t("companion_opened"))
+
+    def focus_pane(self, pane_id: str) -> None:
+        try:
+            herdr("agent", "focus", pane_id)
+        except Exception as e:  # noqa: BLE001
+            self.call_from_thread(
+                self.notify, t("companion_focus_failed", error=e), severity="error")
 
     # ---- session launch / misc
 

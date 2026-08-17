@@ -24,12 +24,36 @@ def fake_run(payload):
     return run
 
 
+NEIGHBOR_9 = {"pane_id": "w1:p9", "tab_id": "w1:t5", "session_id": "sess-9",
+              "cwd": "/data/repos/taco"}
+
+
 def test_neighbor_sessions_keeps_the_same_tab_only(monkeypatch):
     monkeypatch.setenv("HERDR_TAB_ID", "w1:t5")
     monkeypatch.setenv("HERDR_PANE_ID", "w1:p8")
     monkeypatch.setattr(board.subprocess, "run", fake_run(PANES))
+    assert board.neighbor_sessions() == [NEIGHBOR_9]
+
+
+def test_neighbor_sessions_includes_the_companion_from_another_tab(monkeypatch):
+    monkeypatch.setenv("HERDR_TAB_ID", "w1:t5")
+    monkeypatch.setenv("HERDR_PANE_ID", "w1:p8")
+    monkeypatch.setattr(board.subprocess, "run", fake_run(PANES))
+    board.save_companion("sess-b")
     assert board.neighbor_sessions() == [
-        {"pane_id": "w1:p9", "session_id": "sess-9", "cwd": "/data/repos/taco"}]
+        NEIGHBOR_9,
+        {"pane_id": "w1:pB", "tab_id": "w1:t9", "session_id": "sess-b",
+         "cwd": "/data/repos/x"},
+    ]
+
+
+def test_neighbor_sessions_keeps_the_companion_once(monkeypatch):
+    """The companion sitting in the board's own tab is not listed twice."""
+    monkeypatch.setenv("HERDR_TAB_ID", "w1:t5")
+    monkeypatch.setenv("HERDR_PANE_ID", "w1:p8")
+    monkeypatch.setattr(board.subprocess, "run", fake_run(PANES))
+    board.save_companion("sess-9")
+    assert board.neighbor_sessions() == [NEIGHBOR_9]
 
 
 def test_neighbor_sessions_without_tab_env(monkeypatch):

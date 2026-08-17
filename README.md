@@ -21,9 +21,9 @@ session for any card — with live session status badges on the board.
   confirmed together
 - `Enter` on a card launches a Claude Code session for that issue in a new
   herdr tab, injecting `JIRA_ISSUE_KEY` and an initial prompt with the issue
-  summary and URL. A Claude Code session open next to the board hands its
-  transcript over, so the new session picks up what you already discussed
-  ([details](#handing-over-from-the-session-next-to-the-board))
+  summary and URL. The board's companion session (`c`) hands its transcript
+  over, so the new session picks up what you already discussed
+  ([details](#the-companion-session))
 - Session status badges (working / blocked / idle / done) on each card,
   refreshed every 5 seconds via `herdr agent list`
 - Each card shows its created date and due date; overdue is red, due within
@@ -112,6 +112,7 @@ description = "Close other tabs"
 | `Esc` | Cancel every staged move / unfocus |
 | `r` | Refresh the board |
 | `o` | Open the issue in the browser |
+| `c` | Open the companion session beside the board, or jump to it |
 | `q` | Quit |
 
 Cards can also be dragged between columns with the mouse; drops are staged the
@@ -123,19 +124,30 @@ move needs a transition picker asks for it when its turn comes; a card whose
 transition fails goes back to its original column and the rest still run.
 `←` `→` back to a card's own column takes that single card out of the batch.
 
-### Handing over from the session next to the board
+### The companion session
 
-When you launch a session with `Enter`, the board looks for Claude Code sessions
-in its own herdr tab (the panes it sits beside, found through `HERDR_TAB_ID` and
-`herdr pane list`) and appends their transcript paths to the initial prompt. The
-new session is told to grep those transcripts for the issue key and read only
-what matches, so whatever you already discussed about the issue next to the
-board carries over instead of being retyped.
+`c` opens a Claude Code session in a pane beside the board — the one you think
+out loud in, while the sessions launched from cards do the implementation. Press
+`c` again to jump to it.
+
+The board records its Claude session id, so once its pane (or the board itself)
+is closed, `c` brings the same conversation back through
+`claude --resume <session-id>`. A session Claude no longer knows — one that was
+closed before anything was said in it, for instance — is replaced by a fresh one.
+
+### Handing over to a launched session
+
+When you launch a session with `Enter`, the board appends the transcript paths of
+the sessions it is linked to — the companion wherever it sits, plus any other
+Claude pane in the board's own herdr tab (found through `HERDR_TAB_ID` and
+`herdr pane list`) — to the initial prompt. The new session is told to grep those
+transcripts for the issue key and read only what matches, so what you already
+worked out carries over instead of being retyped.
 
 Transcripts are located by session id under
-`${CLAUDE_CONFIG_DIR:-~/.claude}/projects/*/<session-id>.jsonl`. Panes with no
-transcript are skipped, and with no session next to the board the prompt is
-unchanged.
+`${CLAUDE_CONFIG_DIR:-~/.claude}/projects/*/<session-id>.jsonl`. A session that
+has no transcript yet (nothing said in it) is skipped, and with nothing linked
+the prompt is unchanged.
 
 ## Reading the board from Claude
 
