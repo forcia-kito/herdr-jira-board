@@ -35,6 +35,25 @@ async def wait_for_cards(app, pilot):
     raise AssertionError("cards never appeared")
 
 
+async def stage(app, pilot, key, presses=1):
+    """Focus the card and stage a move that many columns to the right."""
+    card = next(c for c in app.query(board.Card) if c.issue.key == key)
+    card.focus()
+    await pilot.pause()
+    for _ in range(presses):
+        await pilot.press("right")
+    await pilot.pause()
+    return card
+
+
+async def wait_for(pilot, predicate):
+    for _ in range(50):
+        if predicate():
+            return
+        await pilot.pause(0.05)
+    raise AssertionError("condition never became true")
+
+
 @pytest.mark.asyncio
 async def test_initial_focus_and_columns(app):
     async with app.run_test() as pilot:
@@ -76,8 +95,99 @@ async def test_confirm_runs_single_transition(app, monkeypatch):
         await pilot.press("right")
         await pilot.pause()
         await pilot.press("enter")
-        for _ in range(50):
-            if executed:
-                break
-            await pilot.pause(0.05)
+        await wait_for(pilot, lambda: executed)
         assert executed == [("KAN-1", "41")]
+
+
+@pytest.mark.asyncio
+async def test_staged_moves_accumulate(app):
+    async with app.run_test() as pilot:
+        await wait_for_cards(app, pilot)
+        first = await stage(app, pilot, "KAN-1")
+        second = await stage(app, pilot, "KAN-2", presses=2)
+        assert (first.pending_target, second.pending_target) == ("indeterminate", "done")
+        assert column_of(first).category == "indeterminate"
+        assert column_of(second).category == "done"
+
+
+@pytest.mark.asyncio
+async def test_confirm_runs_every_staged_move(app, monkeypatch):
+    transitions = [
+        {"id": "21", "name": "In Progress",
+         "to": {"name": "In Progress", "statusCategory": {"key": "indeterminate"}}},
+        {"id": "41", "name": "Done", "to": {"name": "Done", "statusCategory": {"key": "done"}}},
+    ]
+    executed = []
+    monkeypatch.setattr(board.Jira, "transitions", lambda self, key: transitions)
+    monkeypatch.setattr(board.Jira, "do_transition",
+                        lambda self, key, tid: executed.append((key, tid)))
+    async with app.run_test() as pilot:
+        await wait_for_cards(app, pilot)
+        await stage(app, pilot, "KAN-1")
+        await stage(app, pilot, "KAN-2", presses=2)
+        await pilot.press("enter")
+        await wait_for(pilot, lambda: len(executed) == 2)
+        assert sorted(executed) == [("KAN-1", "21"), ("KAN-2", "41")]
+
+
+@pytest.mark.asyncio
+async def test_escape_cancels_every_staged_move(app):
+    async with app.run_test() as pilot:
+        await wait_for_cards(app, pilot)
+        first = await stage(app, pilot, "KAN-1")
+        second = await stage(app, pilot, "KAN-2", presses=2)
+        assert (first.pending_target, second.pending_target) == ("indeterminate", "done")
+        await pilot.press("escape")
+        await pilot.pause()
+        assert (first.pending_target, second.pending_target) == (None, None)
+        assert all(column_of(c).category == "new" for c in (first, second))
+
+
+@pytest.mark.asyncio
+async def test_picker_runs_once_per_staged_card(app, monkeypatch):
+    transitions = [
+        {"id": "21", "name": "Start",
+         "to": {"name": "In Progress", "statusCategory": {"key": "indeterminate"}}},
+        {"id": "31", "name": "Review",
+         "to": {"name": "In Review", "statusCategory": {"key": "indeterminate"}}},
+    ]
+    executed = []
+    monkeypatch.setattr(board.Jira, "transitions", lambda self, key: transitions)
+    monkeypatch.setattr(board.Jira, "do_transition",
+                        lambda self, key, tid: executed.append((key, tid)))
+    async with app.run_test() as pilot:
+        await wait_for_cards(app, pilot)
+        await stage(app, pilot, "KAN-1")
+        await stage(app, pilot, "KAN-2")
+        await pilot.press("enter")
+        for _ in range(2):
+            await wait_for(pilot, lambda: isinstance(app.screen, board.TransitionPicker))
+            await pilot.press("enter")  # take the first candidate
+            await pilot.pause()
+        await wait_for(pilot, lambda: len(executed) == 2)
+        assert sorted(executed) == [("KAN-1", "21"), ("KAN-2", "21")]
+
+
+@pytest.mark.asyncio
+async def test_failed_card_does_not_stop_the_others(app, monkeypatch):
+    transitions = [{"id": "21", "name": "In Progress",
+                    "to": {"name": "In Progress", "statusCategory": {"key": "indeterminate"}}}]
+    executed = []
+
+    def do_transition(self, key, tid):
+        if key == "KAN-1":
+            raise RuntimeError("boom")
+        executed.append((key, tid))
+
+    monkeypatch.setattr(board.Jira, "transitions", lambda self, key: transitions)
+    monkeypatch.setattr(board.Jira, "do_transition", do_transition)
+    async with app.run_test() as pilot:
+        await wait_for_cards(app, pilot)
+        failing = await stage(app, pilot, "KAN-1")
+        other = await stage(app, pilot, "KAN-2")
+        assert (failing.pending_target, other.pending_target) == ("indeterminate",) * 2
+        await pilot.press("enter")
+        await wait_for(pilot, lambda: executed)
+        assert executed == [("KAN-2", "21")]
+        # The failing card gives up its staged move; the other one still went through.
+        assert failing.pending_target is None

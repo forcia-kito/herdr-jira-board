@@ -16,7 +16,9 @@ session for any card — with live session status badges on the board.
   the last 7 days (older Done cards drop off automatically; customizable
   via the `jql` config option)
 - Move cards with drag & drop or `←` `→` keys, then confirm with `Enter`
-  to run the Jira transition (a picker appears when several transitions apply)
+  to run the Jira transition (a picker appears when several transitions apply).
+  Staged moves pile up, so several cards can be moved one at a time and
+  confirmed together
 - `Enter` on a card launches a Claude Code session for that issue in a new
   herdr tab, injecting `JIRA_ISSUE_KEY` and an initial prompt with the issue
   summary and URL
@@ -104,14 +106,20 @@ description = "Close other tabs"
 | --- | --- |
 | `↑` `↓` | Focus previous / next card |
 | `←` `→` | Stage a move to the adjacent column |
-| `Enter` | Confirm a staged move, or launch a Claude session for the card |
-| `Esc` | Cancel a staged move / unfocus |
+| `Enter` | Confirm every staged move, or launch a Claude session for the card |
+| `Esc` | Cancel every staged move / unfocus |
 | `r` | Refresh the board |
 | `o` | Open the issue in the browser |
 | `q` | Quit |
 
 Cards can also be dragged between columns with the mouse; drops are staged the
 same way and confirmed with `Enter`.
+
+Staging is per card and cumulative: stage as many cards as you like — each one
+to its own column — and `Enter` runs them all, one after another. A card whose
+move needs a transition picker asks for it when its turn comes; a card whose
+transition fails goes back to its original column and the rest still run.
+`←` `→` back to a card's own column takes that single card out of the batch.
 
 ## Reading the board from Claude
 
