@@ -1,7 +1,37 @@
 #!/usr/bin/env bash
 # Print the Jira board without opening the TUI.
-# Lives next to SKILL.md so it works when this directory is symlinked into
-# ~/.claude/skills: resolve our real path, then walk up to the plugin root.
+# This runs both from inside the plugin (git checkout, `herdr plugin link`) and
+# from the copy bin/setup puts in ~/.claude/skills, so the plugin is located at
+# run time rather than baked in at install time.
 set -euo pipefail
-ROOT="$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)"
+
+plugin_root() {
+    if [ -n "${HERDR_JIRA_BOARD_ROOT:-}" ]; then
+        printf '%s\n' "$HERDR_JIRA_BOARD_ROOT"
+        return 0
+    fi
+
+    local here=""
+    here="$(cd "$(dirname "$(readlink -f "$0")")/../.." 2>/dev/null && pwd || true)"
+    if [ -n "$here" ] && [ -x "$here/bin/jira-board" ]; then
+        printf '%s\n' "$here"
+        return 0
+    fi
+
+    local candidate
+    for candidate in "${XDG_CONFIG_HOME:-$HOME/.config}"/herdr/plugins/github/jira-board-*; do
+        if [ -x "$candidate/bin/jira-board" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+if ! ROOT="$(plugin_root)"; then
+    echo "error: cannot find the herdr-jira-board plugin." >&2
+    echo "Set HERDR_JIRA_BOARD_ROOT to the plugin directory and try again." >&2
+    exit 1
+fi
+
 exec "$ROOT/bin/jira-board" --dump "$@"
