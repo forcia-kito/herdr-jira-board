@@ -22,6 +22,11 @@ session for any card — with live session status badges on the board.
   summary and URL
 - Session status badges (working / blocked / idle / done) on each card,
   refreshed every 5 seconds via `herdr agent list`
+- Each card shows its created date and due date; overdue is red, due within
+  3 days yellow
+- `bin/jira-board --dump` prints the same board as text (or JSON) without the
+  TUI, and an optional Claude Code skill lets Claude read it — see
+  [Reading the board from Claude](#reading-the-board-from-claude)
 - Tab utilities: actions to close other tabs / tabs to the right
 - UI in English or Japanese — follows your system locale, can be overridden
 
@@ -108,6 +113,34 @@ description = "Close other tabs"
 Cards can also be dragged between columns with the mouse; drops are staged the
 same way and confirmed with `Enter`.
 
+## Reading the board from Claude
+
+`--dump` prints the board as text instead of opening the TUI, using the same
+config, JQL, exclusions and columns:
+
+```
+bin/jira-board --dump          # text
+bin/jira-board --dump --json   # machine-readable
+```
+
+This is what makes the board readable by a Claude Code session — asking Jira
+for the whole board over MCP returns every issue description, which quickly
+exceeds what fits in a reply.
+
+A Claude Code skill that wraps it ships in `skills/jira-board`. It is **not**
+installed by default; opt in by setting an environment variable, which links
+the skill into `~/.claude/skills` (honouring `CLAUDE_CONFIG_DIR`):
+
+```
+HERDR_JIRA_BOARD_INSTALL_SKILL=1 herdr plugin install kiitosu/herdr-jira-board
+# already installed? just re-run the build step:
+HERDR_JIRA_BOARD_INSTALL_SKILL=1 bin/setup
+```
+
+Claude then picks it up when you ask about "the board", and runs the dump for
+you. Nothing is written outside `~/.claude/skills/jira-board`, and an existing
+real directory at that path is never overwritten.
+
 ## Development
 
 ```
@@ -115,7 +148,8 @@ git clone https://github.com/kiitosu/herdr-jira-board
 herdr plugin link herdr-jira-board   # edits take effect immediately
 ```
 
-Check the config without opening the TUI: `bin/jira-board --check`
+Check the config without opening the TUI: `bin/jira-board --check`  
+Print the board without opening the TUI: `bin/jira-board --dump`
 
 Run tests:
 

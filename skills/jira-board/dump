@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Print the Jira board without opening the TUI.
+# Lives next to SKILL.md so it works when this directory is symlinked into
+# ~/.claude/skills: resolve our real path, then walk up to the plugin root.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)"
+exec "$ROOT/bin/jira-board" --dump "$@"

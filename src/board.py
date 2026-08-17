@@ -21,6 +21,7 @@ import time
 import tomllib
 import webbrowser
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 
 import httpx
@@ -36,6 +37,11 @@ def resolve_config_path() -> Path:
     """Prefer herdr's per-plugin config dir, fall back to the legacy location."""
     plugin_dir = os.environ.get("HERDR_PLUGIN_CONFIG_DIR")
     if plugin_dir and (p := Path(plugin_dir) / "config.toml").exists():
+        return p
+    # HERDR_PLUGIN_CONFIG_DIR is only set for commands herdr itself starts, so
+    # `--check` / `--dump` from a plain shell need herdr's default path too.
+    xdg = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    if (p := xdg / "herdr/plugins/config/jira-board/config.toml").exists():
         return p
     return Path.home() / ".config/herdr-jira-board/config.toml"
 
@@ -77,6 +83,8 @@ MESSAGES: dict[str, dict[str, str]] = {
     "prev_card": {"en": "Previous card", "ja": "前のカード"},
     "quit": {"en": "Quit", "ja": "終了"},
     "pending_hint": {"en": "⏎ confirm / Esc cancel", "ja": "⏎確定 / Esc取消"},
+    "created_label": {"en": "created", "ja": "作成"},
+    "due_label": {"en": "due", "ja": "期限"},
     "pick_transition": {"en": "Select a transition for [b]{key}[/b]:",
                         "ja": "[b]{key}[/b] のトランジションを選択:"},
     "fetch_failed": {"en": "Failed to fetch from Jira: {error}", "ja": "Jira 取得失敗: {error}"},
@@ -203,6 +211,8 @@ class Issue:
     status: str
     category: str  # new / indeterminate / done
     issuetype: str
+    created: str = ""  # YYYY-MM-DD
+    duedate: str | None = None  # YYYY-MM-DD, None when the issue has no due date
 
 
 class Jira:
@@ -221,7 +231,7 @@ class Jira:
         r = self.http.post(
             "/rest/api/3/search/jql",
             json={"jql": self.cfg.jql, "maxResults": 100,
-                  "fields": ["summary", "status", "issuetype"]},
+                  "fields": ["summary", "status", "issuetype", "created", "duedate"]},
         )
         r.raise_for_status()
         issues = []
@@ -233,6 +243,9 @@ class Jira:
                 status=f["status"]["name"],
                 category=f["status"]["statusCategory"]["key"],
                 issuetype=(f.get("issuetype") or {}).get("name", ""),
+                # created is a timestamp ("2026-08-13T20:53:14.000+0900"), duedate a plain date
+                created=(f.get("created") or "")[:10],
+                duedate=f.get("duedate") or None,
             ))
         return exclude_by_status(issues, self.cfg.exclude_statuses)
 
@@ -393,6 +406,35 @@ def open_url(url: str) -> None:
     webbrowser.open(url)
 
 
+# ---------------------------------------------------------------- dates
+
+DUE_SOON_DAYS = 3
+
+
+def due_style(duedate: str | None, today: date) -> str:
+    """Rich style for a due date: overdue is red, due within DUE_SOON_DAYS yellow."""
+    if not duedate:
+        return "dim"
+    try:
+        remaining = (date.fromisoformat(duedate) - today).days
+    except ValueError:
+        return "dim"
+    if remaining < 0:
+        return "red"
+    return "yellow" if remaining <= DUE_SOON_DAYS else "dim"
+
+
+def dates_line(issue: Issue, today: date | None = None) -> str:
+    """Created date, plus the due date colored by urgency. Empty when neither is set."""
+    parts = []
+    if issue.created:
+        parts.append(f"[dim]{t('created_label')} {issue.created}[/]")
+    if issue.duedate:
+        style = due_style(issue.duedate, today or date.today())
+        parts.append(f"[{style}]{t('due_label')} {issue.duedate}[/]")
+    return "  ".join(parts)
+
+
 # ---------------------------------------------------------------- widgets
 
 class Card(Static, can_focus=True):
@@ -416,7 +458,9 @@ class Card(Static, can_focus=True):
         if self.agent_status is not None:
             badge = "  " + STATUS_ICONS.get(self.agent_status, f"[dim]{self.agent_status}[/]")
         pending = f"  [yellow]{t('pending_hint')}[/]" if self.pending_target else ""
-        self.update(f"[b]{self.issue.key}[/b] [dim]{self.issue.status}[/]{badge}{pending}\n{self.issue.summary}")
+        dates = dates_line(self.issue)
+        self.update(f"[b]{self.issue.key}[/b] [dim]{self.issue.status}[/]{badge}{pending}\n"
+                    f"{self.issue.summary}" + (f"\n{dates}" if dates else ""))
 
     def on_mouse_down(self, event: events.MouseDown) -> None:
         self.focus()
@@ -707,9 +751,58 @@ class BoardApp(App):
             open_url(f"{self.cfg.site}/browse/{card.issue.key}")
 
 
+# ---------------------------------------------------------------- dump (no TUI)
+
+def badge_of(issue: Issue, statuses: dict[str, str], sessions: dict[str, str]) -> str:
+    """Agent status for the issue's session, or "" when it has none."""
+    pane = sessions.get(issue.key)
+    return statuses.get(pane, "") if pane else ""
+
+
+def dump_text(cfg: Config, issues: list[Issue], statuses: dict[str, str],
+              sessions: dict[str, str]) -> str:
+    """The board as plain text, for reading outside the TUI (`--dump`)."""
+    lines = [f"JQL: {cfg.jql}", f"exclude_statuses: {cfg.exclude_statuses}"]
+    for cat, title in CATEGORY_COLUMNS:
+        column = [i for i in issues if i.category == cat]
+        lines.append(f"\n== {title} ({len(column)}) ==")
+        for issue in column:
+            badge = f" <{status}>" if (status := badge_of(issue, statuses, sessions)) else ""
+            lines.append(
+                f"  {issue.key} [{issue.status}]{badge} ({issue.issuetype}, "
+                f"{t('created_label')} {issue.created or '-'}, "
+                f"{t('due_label')} {issue.duedate or '-'}) {issue.summary}")
+            lines.append(f"    {cfg.site}/browse/{issue.key}")
+    return "\n".join(lines)
+
+
+def dump_json(cfg: Config, issues: list[Issue], statuses: dict[str, str],
+              sessions: dict[str, str]) -> str:
+    """The same board as machine-readable JSON (`--dump --json`)."""
+    columns = [
+        {"category": cat, "title": title,
+         "issues": [{"key": i.key, "summary": i.summary, "status": i.status,
+                     "issuetype": i.issuetype, "created": i.created, "duedate": i.duedate,
+                     "agent_status": badge_of(i, statuses, sessions) or None,
+                     "url": f"{cfg.site}/browse/{i.key}"}
+                    for i in issues if i.category == cat]}
+        for cat, title in CATEGORY_COLUMNS
+    ]
+    return json.dumps({"jql": cfg.jql, "exclude_statuses": cfg.exclude_statuses,
+                       "columns": columns}, ensure_ascii=False, indent=1)
+
+
 if __name__ == "__main__":
     if "--check" in sys.argv:
         Config.load()
         print("config OK")
+        sys.exit(0)
+    if "--dump" in sys.argv:
+        cfg = Config.load()
+        issues = Jira(cfg).search()
+        # agent_statuses() returns {} when herdr is unreachable (e.g. run from a
+        # plain shell), which just leaves the badges off.
+        render = dump_json if "--json" in sys.argv else dump_text
+        print(render(cfg, issues, agent_statuses(), load_sessions()))
         sys.exit(0)
     BoardApp().run()
