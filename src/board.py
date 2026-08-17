@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -372,6 +373,26 @@ def launch_claude(issue: Issue, cfg: Config) -> str:
     return str(pane_id)
 
 
+BROWSER_OPENERS = ("wslview", "xdg-open", "open")
+
+
+def open_url(url: str) -> None:
+    # webbrowser.open() spawns the opener with our stdout/stderr attached, so
+    # anything it prints lands on top of the board. wslu's wslview does exactly
+    # that on WSL. Run the opener ourselves with its output discarded.
+    for name in BROWSER_OPENERS:
+        path = shutil.which(name)
+        if path:
+            subprocess.Popen(
+                [path, url],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            return
+    webbrowser.open(url)
+
+
 # ---------------------------------------------------------------- widgets
 
 class Card(Static, can_focus=True):
@@ -683,7 +704,7 @@ class BoardApp(App):
     def action_open_browser(self) -> None:
         card = self.focused_card()
         if card:
-            webbrowser.open(f"{self.cfg.site}/browse/{card.issue.key}")
+            open_url(f"{self.cfg.site}/browse/{card.issue.key}")
 
 
 if __name__ == "__main__":
