@@ -128,7 +128,7 @@ for the whole board over MCP returns every issue description, which quickly
 exceeds what fits in a reply.
 
 A Claude Code skill that wraps it ships in `skills/jira-board`. It is **not**
-installed by default; opt in by setting an environment variable, which links
+installed by default; opt in by setting an environment variable, which copies
 the skill into `~/.claude/skills` (honouring `CLAUDE_CONFIG_DIR`):
 
 ```
@@ -138,8 +138,12 @@ HERDR_JIRA_BOARD_INSTALL_SKILL=1 bin/setup
 ```
 
 Claude then picks it up when you ask about "the board", and runs the dump for
-you. Nothing is written outside `~/.claude/skills/jira-board`, and an existing
-real directory at that path is never overwritten.
+you. Nothing is written outside `~/.claude/skills/jira-board`, and a directory
+already at that path is left alone unless this plugin installed it.
+
+The copy finds the plugin itself, so it keeps working across upgrades. If you
+keep your plugins somewhere unusual, point it at the plugin explicitly with
+`HERDR_JIRA_BOARD_ROOT`.
 
 ## Development
 

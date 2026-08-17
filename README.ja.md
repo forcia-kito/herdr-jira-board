@@ -120,7 +120,7 @@ Jira MCP でボード全件を取ると各課題の description まで返って�
 Claude Code セッションからボードを把握する手段としてはこちらを使います。
 
 これを呼ぶ Claude Code スキルを `skills/jira-board` に同梱しています。既定では
-インストールされません。環境変数を付けると `~/.claude/skills` へ symlink します
+インストールされません。環境変数を付けると `~/.claude/skills` へコピーします
 （`CLAUDE_CONFIG_DIR` があればそちらを優先）。
 
 ```
@@ -130,8 +130,12 @@ HERDR_JIRA_BOARD_INSTALL_SKILL=1 bin/setup
 ```
 
 以後 Claude は「ボードの状況を確認して」等で自動的にこのスキルを使い、dump を実行します。
-書き込むのは `~/.claude/skills/jira-board` だけで、そこに実ディレクトリが既にある場合は
-上書きせず何もしません。
+書き込むのは `~/.claude/skills/jira-board` だけで、そこに本プラグイン以外が作った
+ディレクトリがある場合は何もしません。
+
+コピーされたスキルは実行時にプラグインの場所を自力で解決するため、プラグイン更新後も
+そのまま動きます。プラグインを通常と異なる場所に置いている場合は
+`HERDR_JIRA_BOARD_ROOT` で明示してください。
 
 ## 開発
 

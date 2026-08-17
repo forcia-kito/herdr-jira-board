@@ -4,22 +4,33 @@
 #
 # - If uv is available, nothing to do: `uv run` resolves dependencies at launch.
 # - Otherwise create .venv with python3 (3.11+) and install the dependencies.
-# - With HERDR_JIRA_BOARD_INSTALL_SKILL=1, also link the Claude Code skill.
+# - With HERDR_JIRA_BOARD_INSTALL_SKILL=1, also install the Claude Code skill.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 install_skill() {
-    # Off by default: linking into ~/.claude is the user's decision, not ours.
+    # Off by default: writing into ~/.claude is the user's decision, not ours.
     [ "${HERDR_JIRA_BOARD_INSTALL_SKILL:-}" = "1" ] || return 0
 
     local dest="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/jira-board"
-    if [ -e "$dest" ] && [ ! -L "$dest" ]; then
-        echo "skill: $dest already exists and is not a symlink; leaving it alone." >&2
+    local marker="$dest/.installed-by-herdr-jira-board"
+
+    # Copy rather than symlink: `herdr plugin install` runs this build step in a
+    # staging directory that is gone once the install finishes, so a link made
+    # from $ROOT would dangle. skills/jira-board/dump finds the plugin at run
+    # time instead. Older versions did symlink, so replace one if we find it.
+    if [ -L "$dest" ]; then
+        rm -f "$dest"
+    fi
+    if [ -e "$dest" ] && [ ! -e "$marker" ]; then
+        echo "skill: $dest exists and was not installed by this plugin; leaving it alone." >&2
         return 0
     fi
-    mkdir -p "$(dirname "$dest")"
-    ln -sfn "$ROOT/skills/jira-board" "$dest"
-    echo "skill: linked $dest -> $ROOT/skills/jira-board"
+
+    mkdir -p "$dest"
+    cp "$ROOT/skills/jira-board/SKILL.md" "$ROOT/skills/jira-board/dump" "$dest/"
+    touch "$marker"
+    echo "skill: installed $dest"
 }
 
 # Before the Python setup below, which exits early when uv is present.
