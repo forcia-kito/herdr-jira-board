@@ -21,7 +21,9 @@ session for any card — with live session status badges on the board.
   confirmed together
 - `Enter` on a card launches a Claude Code session for that issue in a new
   herdr tab, injecting `JIRA_ISSUE_KEY` and an initial prompt with the issue
-  summary and URL
+  summary and URL. A Claude Code session open next to the board hands its
+  transcript over, so the new session picks up what you already discussed
+  ([details](#handing-over-from-the-session-next-to-the-board))
 - Session status badges (working / blocked / idle / done) on each card,
   refreshed every 5 seconds via `herdr agent list`
 - Each card shows its created date and due date; overdue is red, due within
@@ -120,6 +122,20 @@ to its own column — and `Enter` runs them all, one after another. A card whose
 move needs a transition picker asks for it when its turn comes; a card whose
 transition fails goes back to its original column and the rest still run.
 `←` `→` back to a card's own column takes that single card out of the batch.
+
+### Handing over from the session next to the board
+
+When you launch a session with `Enter`, the board looks for Claude Code sessions
+in its own herdr tab (the panes it sits beside, found through `HERDR_TAB_ID` and
+`herdr pane list`) and appends their transcript paths to the initial prompt. The
+new session is told to grep those transcripts for the issue key and read only
+what matches, so whatever you already discussed about the issue next to the
+board carries over instead of being retyped.
+
+Transcripts are located by session id under
+`${CLAUDE_CONFIG_DIR:-~/.claude}/projects/*/<session-id>.jsonl`. Panes with no
+transcript are skipped, and with no session next to the board the prompt is
+unchanged.
 
 ## Reading the board from Claude
 

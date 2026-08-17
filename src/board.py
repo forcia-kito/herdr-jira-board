@@ -112,6 +112,16 @@ MESSAGES: dict[str, dict[str, str]] = {
     "no_tab_id": {"en": "Cannot find tab_id for pane {pane}",
                   "ja": "pane {pane} の tab_id を特定できません"},
     "herdr_failed": {"en": "{command} failed: {detail}", "ja": "{command} が失敗: {detail}"},
+    "handoff": {
+        "en": ("Claude Code sessions are open next to the board; their transcripts are:\n"
+               "{transcripts}\n"
+               "They may already hold work on this issue. Don't read them whole — grep them "
+               "for {key} first and read only what matches, then carry that over."),
+        "ja": ("同じタブで開いている Claude Code セッションの記録があります:\n"
+               "{transcripts}\n"
+               "この課題に関するやり取りが含まれている可能性があります。全部は読まず、"
+               "まず {key} で grep して、該当する部分だけ読んで引き継いでください。"),
+    },
     "initial_prompt": {
         "en": ("Let's work on Jira issue {key}.\n"
                "Summary: {summary}\n"
@@ -333,6 +343,60 @@ def find_session_pane(key: str) -> str | None:
     return None
 
 
+def neighbor_sessions() -> list[dict[str, str]]:
+    """Claude panes sharing the board's tab, as {pane_id, session_id, cwd}.
+
+    herdr exports HERDR_PANE_ID / HERDR_TAB_ID to the plugin pane, so the board
+    can tell which panes sit next to it.
+    """
+    tab_id = os.environ.get("HERDR_TAB_ID")
+    own_pane = os.environ.get("HERDR_PANE_ID")
+    if not tab_id:
+        return []
+    try:
+        panes = find_key(herdr("pane", "list"), "panes") or []
+    except (subprocess.CalledProcessError, OSError):
+        return []
+    out = []
+    for pane in panes:
+        if not isinstance(pane, dict) or pane.get("tab_id") != tab_id:
+            continue
+        if pane.get("pane_id") == own_pane or pane.get("agent") != "claude":
+            continue
+        if session := (pane.get("agent_session") or {}).get("value"):
+            out.append({"pane_id": str(pane.get("pane_id") or ""),
+                        "session_id": str(session), "cwd": str(pane.get("cwd") or "")})
+    return out
+
+
+def transcript_path(session_id: str) -> Path | None:
+    """The Claude Code transcript of a session, looked up by its id.
+
+    Its directory is named after the session's cwd with the punctuation rewritten,
+    so glob for the (unique) session id rather than rebuilding that name.
+    """
+    root = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "projects"
+    try:
+        return next(root.glob(f"*/{session_id}.jsonl"), None)
+    except OSError:
+        return None
+
+
+def handoff_note(issue_key: str) -> str:
+    """Point the new session at the transcripts of the sessions next to the board."""
+    lines = [f"- {path} (cwd: {pane['cwd'] or '-'})"
+             for pane in neighbor_sessions()
+             if (path := transcript_path(pane["session_id"]))]
+    return t("handoff", key=issue_key, transcripts="\n".join(lines)) if lines else ""
+
+
+def initial_prompt(issue: Issue, cfg: Config) -> str:
+    """The prompt the launched session starts from, with the handoff appended."""
+    prompt = t("initial_prompt", key=issue.key, summary=issue.summary,
+               url=f"{cfg.site}/browse/{issue.key}")
+    return f"{prompt}\n\n{note}" if (note := handoff_note(issue.key)) else prompt
+
+
 def launch_claude(issue: Issue, cfg: Config) -> str:
     """Create a tab for the issue and launch Claude. Returns the pane_id."""
     project = issue.key.split("-")[0]
@@ -361,8 +425,7 @@ def launch_claude(issue: Issue, cfg: Config) -> str:
         # Claude may not accept input immediately after start; wait until it is
         # idle (prompt ready), then send and confirm the working transition.
         herdr("agent", "wait", str(pane_id), "--until", "idle", "--timeout", "60000")
-        prompt = t("initial_prompt", key=issue.key, summary=issue.summary,
-                   url=f"{cfg.site}/browse/{issue.key}")
+        prompt = initial_prompt(issue, cfg)
         try:
             herdr("agent", "prompt", str(pane_id), prompt, "--wait", "--until", "working",
                   "--timeout", "30000")
