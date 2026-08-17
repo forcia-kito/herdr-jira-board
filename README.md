@@ -61,7 +61,7 @@ api_token = "<your API token>"
 ```
 
 See the comments in `config.toml.example` for all options
-(`api_token_cmd`, `jql`, `language`, `[project_dirs]`).
+(`api_token_cmd`, `jql`, `exclude_statuses`, `language`, `[project_dirs]`).
 
 ## Usage
 

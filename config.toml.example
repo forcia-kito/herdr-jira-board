@@ -22,6 +22,12 @@ api_token = ""
 # Default: your open issues plus issues completed in the last 7 days.
 # jql = "assignee = currentUser() AND (statusCategory != Done OR updated >= -7d) ORDER BY updated DESC"
 
+# Optional: status names to hide from the board, compared case-insensitively.
+# Handy for a custom workflow status that never reaches the Done category and
+# would otherwise sit in the In Progress column forever. Applied on top of `jql`,
+# so you keep the default query instead of rewriting it.
+# exclude_statuses = ["Resolved"]
+
 # Optional: UI language, "en" or "ja". Omit to follow the system locale
 # (LC_ALL / LC_MESSAGES / LANG).
 # language = "en"

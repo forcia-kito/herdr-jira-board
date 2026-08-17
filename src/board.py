@@ -152,6 +152,7 @@ class Config:
     email: str
     api_token: str
     jql: str
+    exclude_statuses: list[str] = field(default_factory=list)
     project_dirs: dict[str, str] = field(default_factory=dict)
 
     @classmethod
@@ -174,6 +175,7 @@ class Config:
                 "jql",
                 "assignee = currentUser() AND (statusCategory != Done OR updated >= -7d) ORDER BY updated DESC",
             ),
+            exclude_statuses=raw.get("exclude_statuses", []),
             project_dirs=raw.get("project_dirs", {}),
         )
 
@@ -231,7 +233,7 @@ class Jira:
                 category=f["status"]["statusCategory"]["key"],
                 issuetype=(f.get("issuetype") or {}).get("name", ""),
             ))
-        return issues
+        return exclude_by_status(issues, self.cfg.exclude_statuses)
 
     def transitions(self, key: str) -> list[dict]:
         r = self.http.get(f"/rest/api/3/issue/{key}/transitions")
@@ -242,6 +244,18 @@ class Jira:
         r = self.http.post(f"/rest/api/3/issue/{key}/transitions",
                            json={"transition": {"id": transition_id}})
         r.raise_for_status()
+
+
+def exclude_by_status(issues: list[Issue], excluded: list[str]) -> list[Issue]:
+    """Issues whose status name is not listed in `excluded` (case-insensitive).
+
+    Lets a custom workflow status be hidden from the board without rewriting the
+    `jql` option, which the user may have customized (including its ORDER BY).
+    """
+    if not excluded:
+        return issues
+    drop = {name.casefold() for name in excluded}
+    return [i for i in issues if i.status.casefold() not in drop]
 
 
 def transitions_to_category(transitions: list[dict], target_category: str) -> list[dict]:
