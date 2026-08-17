@@ -20,6 +20,9 @@ English version: [README.md](README.md)
   新しい herdr タブに起動（`JIRA_ISSUE_KEY` と課題情報の初期プロンプトを注入）
 - `herdr agent list` を5秒ごとにポーリングし、カードにセッション状態バッジ
   (working / blocked / idle / done) を表示
+- カードに作成日と期限を表示（期限切れは赤、3日以内は黄）
+- `bin/jira-board --dump` で同じ盤面を TUI なしのテキスト（または JSON）で出力。
+  Claude Code から読ませるスキルも同梱 — [Claude からボードを読む](#claude-からボードを読む)
 - タブ整理アクション（他のタブを閉じる / 右側のタブを閉じる）付き
 - UI は英語 / 日本語対応 — システムロケールに追従し、設定で上書きも可能
 
@@ -104,6 +107,32 @@ description = "他のタブを閉じる"
 
 マウスでカードを列間ドラッグすることもできます（同様に仮移動 → `Enter` で確定）。
 
+## Claude からボードを読む
+
+`--dump` は TUI を開かず、看板と同じ設定・JQL・除外・列分類で盤面をテキスト出力します。
+
+```
+bin/jira-board --dump          # テキスト
+bin/jira-board --dump --json   # 機械可読
+```
+
+Jira MCP でボード全件を取ると各課題の description まで返ってきて応答が肥大するため、
+Claude Code セッションからボードを把握する手段としてはこちらを使います。
+
+これを呼ぶ Claude Code スキルを `skills/jira-board` に同梱しています。既定では
+インストールされません。環境変数を付けると `~/.claude/skills` へ symlink します
+（`CLAUDE_CONFIG_DIR` があればそちらを優先）。
+
+```
+HERDR_JIRA_BOARD_INSTALL_SKILL=1 herdr plugin install kiitosu/herdr-jira-board
+# インストール済みならビルド手順だけ再実行:
+HERDR_JIRA_BOARD_INSTALL_SKILL=1 bin/setup
+```
+
+以後 Claude は「ボードの状況を確認して」等で自動的にこのスキルを使い、dump を実行します。
+書き込むのは `~/.claude/skills/jira-board` だけで、そこに実ディレクトリが既にある場合は
+上書きせず何もしません。
+
 ## 開発
 
 ```
@@ -111,7 +140,8 @@ git clone https://github.com/kiitosu/herdr-jira-board
 herdr plugin link herdr-jira-board   # 編集が即時反映されます
 ```
 
-TUI を開かず設定だけ確認: `bin/jira-board --check`
+TUI を開かず設定だけ確認: `bin/jira-board --check`  
+TUI を開かず盤面を確認: `bin/jira-board --dump`
 
 テスト実行:
 
