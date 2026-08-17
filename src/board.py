@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
@@ -97,6 +98,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "ja": "{key}: トランジション失敗 (必須フィールドがある場合はブラウザで操作してください): {error}",
     },
     "moved": {"en": "Moved {key}", "ja": "{key} を移動しました"},
+    "confirming": {"en": "Confirming the staged moves…", "ja": "仮移動を確定中です…"},
     "launching_already": {"en": "A session for {key} is already starting…",
                           "ja": "{key} のセッションを起動中です…"},
     "launching": {"en": "Starting a session for {key}…", "ja": "{key} のセッションを起動しています…"},
@@ -541,6 +543,7 @@ class BoardApp(App):
         self.jira = Jira(self.cfg)
         self.sessions = load_sessions()
         self._launching: set[str] = set()
+        self._moving = False
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -609,9 +612,7 @@ class BoardApp(App):
     # ---- pending move (move visually only; Enter confirms, Esc cancels)
 
     def stage_move(self, card: Card, target_category: str) -> None:
-        for other in self.query(Card):
-            if other is not card and other.pending_target:
-                self.cancel_move(other)
+        # Staged moves accumulate: cards are moved one at a time and confirmed together.
         self.mount_card_in(card, target_category)
         card.pending_target = target_category
         card.add_class("pending")
@@ -626,71 +627,87 @@ class BoardApp(App):
         card.remove_class("pending")
         card.render_card()
 
+    def pending_cards(self) -> list[Card]:
+        """Cards with a staged move, in board order (left column first)."""
+        return [card for card in self.query(Card) if card.pending_target]
+
     def action_cancel_move(self) -> None:
-        card = self.focused_card()
-        if card and card.pending_target:
-            self.cancel_move(card)
-        elif card:
+        if pending := self.pending_cards():
+            for card in pending:
+                self.cancel_move(card)
+        elif self.focused_card():
             self.set_focus(None)
 
     def mount_card_in(self, card: Card, category: str) -> None:
         column = next(c for c in self.query(Column) if c.category == category)
+        # Only the card the user is on keeps the focus; re-mounting the others
+        # (confirming or cancelling several staged moves) must not steal it.
+        had_focus = card.has_focus
 
         async def _move() -> None:
             await card.remove()
             await column.mount(card)
-            card.focus()
+            if had_focus:
+                card.focus()
 
         self.run_worker(_move(), exclusive=False)
 
     def action_confirm_or_launch(self) -> None:
-        card = self.focused_card()
-        if not card:
-            return
-        if card.pending_target:
-            self.run_move(card, card.pending_target)
-        else:
+        if pending := self.pending_cards():
+            if self._moving:
+                self.notify(t("confirming"))
+                return
+            # Set here, not in the worker: a second Enter can arrive before the
+            # worker's first line runs.
+            self._moving = True
+            self.run_moves(pending)
+        elif self.focused_card():
             self.action_launch()
 
-    @work(thread=True)
-    def run_move(self, card: Card, target_category: str) -> None:
+    @work(group="moves")
+    async def run_moves(self, cards: list[Card]) -> None:
+        """Confirm the staged moves one card at a time, pickers included."""
+        moved = False
+        try:
+            for card in cards:
+                # A card can lose its staged move while an earlier picker is open.
+                if card.pending_target and await self.run_move(card, card.pending_target):
+                    moved = True
+        finally:
+            self._moving = False
+        if moved:
+            self.action_refresh()
+
+    async def run_move(self, card: Card, target_category: str) -> bool:
+        """Run one card's transition. Cancels its staged move and returns False on failure."""
         key = card.issue.key
         try:
-            candidates = transitions_to_category(self.jira.transitions(key), target_category)
+            # httpx is synchronous; keep it off the event loop so the board stays live.
+            transitions = await asyncio.to_thread(self.jira.transitions, key)
         except Exception as e:  # noqa: BLE001
-            self.call_from_thread(self.notify, t("transitions_failed", error=e), severity="error")
-            self.call_from_thread(self.cancel_move, card)
-            return
+            self.notify(t("transitions_failed", error=e), severity="error")
+            self.cancel_move(card)
+            return False
+        candidates = transitions_to_category(transitions, target_category)
         if not candidates:
-            self.call_from_thread(
-                self.notify, t("no_transition", key=key), severity="warning")
-            self.call_from_thread(self.cancel_move, card)
-            return
+            self.notify(t("no_transition", key=key), severity="warning")
+            self.cancel_move(card)
+            return False
         if len(candidates) == 1:
-            self.execute_transition(card, candidates[0]["id"], target_category)
+            transition_id = candidates[0]["id"]
         else:
-            self.call_from_thread(self.pick_transition, card, candidates, target_category)
-
-    def pick_transition(self, card: Card, candidates: list[dict], target_category: str) -> None:
-        def done(tid: str | None) -> None:
-            if tid:
-                self.execute_transition(card, tid, target_category)
-            else:
+            transition_id = await self.push_screen_wait(TransitionPicker(card.issue, candidates))
+            if not transition_id:
                 self.cancel_move(card)
-        self.push_screen(TransitionPicker(card.issue, candidates), done)
-
-    @work(thread=True)
-    def execute_transition(self, card: Card, transition_id: str, target_category: str) -> None:
-        key = card.issue.key
+                return False
         try:
-            self.jira.do_transition(key, transition_id)
+            await asyncio.to_thread(self.jira.do_transition, key, transition_id)
         except Exception as e:  # noqa: BLE001
-            self.call_from_thread(self.notify, t("transition_failed", key=key, error=e),
-                                  severity="error")
-            self.call_from_thread(self.cancel_move, card)
-            return
-        self.call_from_thread(self.notify, t("moved", key=key))
-        self.call_from_thread(self.action_refresh)
+            self.notify(t("transition_failed", key=key, error=e), severity="error")
+            self.cancel_move(card)
+            return False
+        self.notify(t("moved", key=key))
+        return True
 
     # ---- session launch / misc
 
