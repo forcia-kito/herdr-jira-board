@@ -25,6 +25,9 @@ session for any card — with live session status badges on the board.
   session (`c`) hands its transcript
   over, so the new session picks up what you already discussed
   ([details](#the-companion-session))
+- A column that mixes several statuses (typically In Progress) groups its
+  cards per status under a divider; the order is configurable
+  (`status_order`)
 - Session status badges (working / blocked / idle / done) on each card,
   refreshed every 5 seconds via `herdr agent list`
 - Each card shows its created date and due date; overdue is red, due within
@@ -71,7 +74,8 @@ api_token = "<your API token>"
 ```
 
 See the comments in `config.toml.example` for all options
-(`api_token_cmd`, `jql`, `exclude_statuses`, `language`, `[project_dirs]`).
+(`api_token_cmd`, `jql`, `exclude_statuses`, `status_order`, `language`,
+`[project_dirs]`).
 
 ## Usage
 

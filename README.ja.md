@@ -22,6 +22,8 @@ English version: [README.md](README.md)
   説明文・URL を含む初期プロンプトを注入）。
   ボードの相棒セッション（`c`）の記録を引き継ぐので、既に話していた内容から
   始められます（[詳細](#相棒セッション)）
+- 複数ステータスが混在する列（主に In Progress）は、ステータスごとに区切り
+  ラベルを入れてカードをグループ表示。並び順は設定 `status_order` で指定可能
 - `herdr agent list` を5秒ごとにポーリングし、カードにセッション状態バッジ
   (working / blocked / idle / done) を表示
 - カードに作成日と期限を表示（期限切れは赤、3日以内は黄）
@@ -64,8 +66,8 @@ email = "you@example.com"
 api_token = "<API トークン>"
 ```
 
-すべてのオプション（`api_token_cmd`, `jql`, `exclude_statuses`, `language`,
-`[project_dirs]`）は `config.toml.example` のコメントを参照してください。
+すべてのオプション（`api_token_cmd`, `jql`, `exclude_statuses`, `status_order`,
+`language`, `[project_dirs]`）は `config.toml.example` のコメントを参照してください。
 
 ## 使い方
 
