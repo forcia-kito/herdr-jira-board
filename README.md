@@ -21,7 +21,8 @@ session for any card — with live session status badges on the board.
   confirmed together
 - `Enter` on a card launches a Claude Code session for that issue in a new
   herdr tab, injecting `JIRA_ISSUE_KEY` and an initial prompt with the issue
-  summary and URL. The board's companion session (`c`) hands its transcript
+  summary, status, due date, description and URL. The board's companion
+  session (`c`) hands its transcript
   over, so the new session picks up what you already discussed
   ([details](#the-companion-session))
 - Session status badges (working / blocked / idle / done) on each card,
