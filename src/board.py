@@ -99,6 +99,11 @@ MESSAGES: dict[str, dict[str, str]] = {
         "ja": "{key}: トランジション失敗 (必須フィールドがある場合はブラウザで操作してください): {error}",
     },
     "moved": {"en": "Moved {key}", "ja": "{key} を移動しました"},
+    "transition_status": {"en": "Change status", "ja": "ステータス変更"},
+    "no_transitions": {"en": "{key}: no transitions available",
+                       "ja": "{key}: 実行できるトランジションがありません"},
+    "transitioned": {"en": "Updated the status of {key}",
+                     "ja": "{key} のステータスを更新しました"},
     "confirming": {"en": "Confirming the staged moves…", "ja": "仮移動を確定中です…"},
     "launching_already": {"en": "A session for {key} is already starting…",
                           "ja": "{key} のセッションを起動中です…"},
@@ -783,6 +788,7 @@ class BoardApp(App):
         Binding("enter", "confirm_or_launch", t("confirm_or_launch")),
         Binding("escape", "cancel_move", t("cancel_or_unfocus"), show=False),
         Binding("o", "open_browser", t("open_browser")),
+        Binding("t", "transition", t("transition_status")),
         Binding("c", "companion", t("companion")),
         Binding("down", "focus_next", t("next_card"), show=False),
         Binding("up", "focus_previous", t("prev_card"), show=False),
@@ -967,6 +973,39 @@ class BoardApp(App):
             return False
         self.notify(t("moved", key=key))
         return True
+
+    def action_transition(self) -> None:
+        """Change the focused card's status without leaving its column.
+
+        The arrow keys only reach another column's statuses; this covers
+        moves inside one category (e.g. In Progress -> In Review).
+        """
+        if card := self.focused_card():
+            self.run_transition(card)
+
+    @work(group="moves", exclusive=True)
+    async def run_transition(self, card: Card) -> None:
+        key = card.issue.key
+        try:
+            transitions = await asyncio.to_thread(self.jira.transitions, key)
+        except Exception as e:  # noqa: BLE001
+            self.notify(t("transitions_failed", error=e), severity="error")
+            return
+        if not transitions:
+            self.notify(t("no_transitions", key=key), severity="warning")
+            return
+        # Always ask, even with a single candidate: unlike an arrow-key move
+        # the user has not said where the card should go yet.
+        transition_id = await self.push_screen_wait(TransitionPicker(card.issue, transitions))
+        if not transition_id:
+            return
+        try:
+            await asyncio.to_thread(self.jira.do_transition, key, transition_id)
+        except Exception as e:  # noqa: BLE001
+            self.notify(t("transition_failed", key=key, error=e), severity="error")
+            return
+        self.notify(t("transitioned", key=key))
+        self.action_refresh()
 
     # ---- companion session
 

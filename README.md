@@ -18,7 +18,8 @@ session for any card — with live session status badges on the board.
 - Move cards with drag & drop or `←` `→` keys, then confirm with `Enter`
   to run the Jira transition (a picker appears when several transitions apply).
   Staged moves pile up, so several cards can be moved one at a time and
-  confirmed together
+  confirmed together. `t` changes a card's status through any transition,
+  including those that stay in the same column (e.g. In Progress → In Review)
 - `Enter` on a card launches a Claude Code session for that issue in a new
   herdr tab, injecting `JIRA_ISSUE_KEY` and an initial prompt with the issue
   summary, status, due date, description and URL. The board's companion
@@ -117,6 +118,7 @@ description = "Close other tabs"
 | `Esc` | Cancel every staged move / unfocus |
 | `r` | Refresh the board |
 | `o` | Open the issue in the browser |
+| `t` | Change the card's status (picker with every transition, same-column ones included) |
 | `c` | Open the companion session beside the board, or jump to it |
 | `q` | Quit |
 
