@@ -199,6 +199,7 @@ class Config:
     api_token: str
     jql: str
     exclude_statuses: list[str] = field(default_factory=list)
+    status_order: list[str] = field(default_factory=list)
     project_dirs: dict[str, str] = field(default_factory=dict)
 
     @classmethod
@@ -222,6 +223,7 @@ class Config:
                 "assignee = currentUser() AND (statusCategory != Done OR updated >= -7d) ORDER BY updated DESC",
             ),
             exclude_statuses=raw.get("exclude_statuses", []),
+            status_order=raw.get("status_order", []),
             project_dirs=raw.get("project_dirs", {}),
         )
 
@@ -367,6 +369,23 @@ def clip_description(text: str) -> str:
     if len(text) <= DESCRIPTION_LIMIT:
         return text
     return text[:DESCRIPTION_LIMIT] + t("description_truncated")
+
+
+def group_by_status(issues: list[Issue], order: list[str]) -> list[tuple[str, list[Issue]]]:
+    """Issues grouped by status name.
+
+    Statuses listed in `order` come first, in that order (compared
+    case-insensitively); the rest follow in order of first appearance,
+    which is the JQL result order.
+    """
+    groups: dict[str, list[Issue]] = {}
+    for issue in issues:
+        groups.setdefault(issue.status, []).append(issue)
+    ranks = {name.casefold(): i for i, name in enumerate(order)}
+    appearance = list(groups)
+    statuses = sorted(groups, key=lambda s: (ranks.get(s.casefold(), len(ranks)),
+                                             appearance.index(s)))
+    return [(status, groups[status]) for status in statuses]
 
 
 def transitions_to_category(transitions: list[dict], target_category: str) -> list[dict]:
@@ -709,6 +728,14 @@ class Column(VerticalScroll):
         self.border_title = title
 
 
+class StatusDivider(Static):
+    """A label separating the status groups inside a column."""
+
+    def __init__(self, status: str):
+        super().__init__(f"[dim]── {status} ──[/]", classes="status-divider")
+        self.status = status
+
+
 class TransitionPicker(ModalScreen[str | None]):
     BINDINGS = [Binding("escape", "dismiss(None)", t("cancel"))]
 
@@ -747,6 +774,7 @@ class BoardApp(App):
     Card:focus { border: round $accent; }
     Card.dragging { opacity: 0.6; }
     Card.pending { border: round $warning; }
+    .status-divider { margin-bottom: 1; text-align: center; }
     #picker { width: 60; height: auto; max-height: 20; border: thick $accent; background: $surface; padding: 1; }
     TransitionPicker { align: center middle; }
     """
@@ -795,8 +823,14 @@ class BoardApp(App):
     def populate(self, issues: list[Issue]) -> None:
         for col in self.query(Column):
             col.remove_children()
-            for issue in issues:
-                if issue.category == col.category:
+            column_issues = [i for i in issues if i.category == col.category]
+            groups = group_by_status(column_issues, self.cfg.status_order)
+            for status, group in groups:
+                # The divider only earns its line when the column actually
+                # mixes statuses (To Do / Done usually have just one).
+                if len(groups) > 1:
+                    col.mount(StatusDivider(status))
+                for issue in group:
                     col.mount(Card(issue))
         if (first := next(iter(self.query(Card)), None)) is not None:
             first.focus()
