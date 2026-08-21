@@ -141,13 +141,22 @@ MESSAGES: dict[str, dict[str, str]] = {
     "initial_prompt": {
         "en": ("Let's work on Jira issue {key}.\n"
                "Summary: {summary}\n"
-               "URL: {url}\n"
-               "Start by understanding the issue and proposing an approach."),
+               "Status: {status} ({issuetype})  Due: {due}\n"
+               "URL: {url}"),
         "ja": ("Jira 課題 {key} の作業をします。\n"
                "サマリ: {summary}\n"
-               "URL: {url}\n"
-               "まず課題内容を把握し、作業方針を提案してください。"),
+               "ステータス: {status}（{issuetype}）  期限: {due}\n"
+               "URL: {url}"),
     },
+    "prompt_description": {
+        "en": "Description:\n{description}",
+        "ja": "説明:\n{description}",
+    },
+    "prompt_instruction": {
+        "en": "Start by understanding the issue and proposing an approach.",
+        "ja": "まず課題内容を把握し、作業方針を提案してください。",
+    },
+    "description_truncated": {"en": "… (truncated)", "ja": "…（以下省略）"},
 }
 
 
@@ -290,6 +299,13 @@ class Jira:
             ))
         return exclude_by_status(issues, self.cfg.exclude_statuses)
 
+    def description(self, key: str) -> str:
+        """The issue's description as plain text ("" when it has none)."""
+        r = self.http.get(f"/rest/api/3/issue/{key}", params={"fields": "description"})
+        r.raise_for_status()
+        adf = (r.json().get("fields") or {}).get("description")
+        return adf_to_text(adf).strip()
+
     def transitions(self, key: str) -> list[dict]:
         r = self.http.get(f"/rest/api/3/issue/{key}/transitions")
         r.raise_for_status()
@@ -311,6 +327,46 @@ def exclude_by_status(issues: list[Issue], excluded: list[str]) -> list[Issue]:
         return issues
     drop = {name.casefold() for name in excluded}
     return [i for i in issues if i.status.casefold() not in drop]
+
+
+# Block-level ADF nodes end the line they produced; everything else is inline.
+ADF_BLOCK_TYPES = {"paragraph", "heading", "blockquote", "codeBlock", "listItem",
+                   "tableRow", "tableHeader", "tableCell", "rule", "panel"}
+
+
+def adf_to_text(node: object) -> str:
+    """Plain text of an Atlassian Document Format tree (best effort).
+
+    Jira v3 returns descriptions as ADF; the launched session only needs the
+    words, so formatting is reduced to line breaks and "- " list bullets.
+    """
+    if isinstance(node, list):
+        return "".join(adf_to_text(n) for n in node)
+    if not isinstance(node, dict):
+        return ""
+    typ = node.get("type")
+    if typ == "text":
+        return node.get("text", "")
+    if typ == "hardBreak":
+        return "\n"
+    if typ in ("mention", "emoji", "status"):
+        attrs = node.get("attrs") or {}
+        return str(attrs.get("text") or attrs.get("shortName") or "")
+    text = adf_to_text(node.get("content", []))
+    if typ == "listItem":
+        text = f"- {text}"
+    if typ in ADF_BLOCK_TYPES and not text.endswith("\n"):
+        text += "\n"
+    return text
+
+
+DESCRIPTION_LIMIT = 3000
+
+
+def clip_description(text: str) -> str:
+    if len(text) <= DESCRIPTION_LIMIT:
+        return text
+    return text[:DESCRIPTION_LIMIT] + t("description_truncated")
 
 
 def transitions_to_category(transitions: list[dict], target_category: str) -> list[dict]:
@@ -499,14 +555,20 @@ def handoff_note(issue_key: str) -> str:
     return t("handoff", key=issue_key, transcripts="\n".join(lines)) if lines else ""
 
 
-def initial_prompt(issue: Issue, cfg: Config) -> str:
+def initial_prompt(issue: Issue, cfg: Config, description: str = "") -> str:
     """The prompt the launched session starts from, with the handoff appended."""
-    prompt = t("initial_prompt", key=issue.key, summary=issue.summary,
-               url=f"{cfg.site}/browse/{issue.key}")
-    return f"{prompt}\n\n{note}" if (note := handoff_note(issue.key)) else prompt
+    parts = [t("initial_prompt", key=issue.key, summary=issue.summary,
+               status=issue.status, issuetype=issue.issuetype or "-",
+               due=issue.duedate or "-", url=f"{cfg.site}/browse/{issue.key}")]
+    if description:
+        parts.append(t("prompt_description", description=clip_description(description)))
+    parts.append(t("prompt_instruction"))
+    if note := handoff_note(issue.key):
+        parts.append(note)
+    return "\n\n".join(parts)
 
 
-def launch_claude(issue: Issue, cfg: Config) -> str:
+def launch_claude(issue: Issue, cfg: Config, description: str = "") -> str:
     """Create a tab for the issue and launch Claude. Returns the pane_id."""
     project = issue.key.split("-")[0]
     cwd = os.path.expanduser(cfg.project_dirs.get(project, "~"))
@@ -523,7 +585,7 @@ def launch_claude(issue: Issue, cfg: Config) -> str:
         # Claude may not accept input immediately after start; wait until it is
         # idle (prompt ready), then send and confirm the working transition.
         herdr("agent", "wait", str(pane_id), "--until", "idle", "--timeout", "60000")
-        prompt = initial_prompt(issue, cfg)
+        prompt = initial_prompt(issue, cfg, description)
         try:
             herdr("agent", "prompt", str(pane_id), prompt, "--wait", "--until", "working",
                   "--timeout", "30000")
@@ -947,7 +1009,13 @@ class BoardApp(App):
     @work(thread=True)
     def run_launch(self, issue: Issue) -> None:
         try:
-            pane = launch_claude(issue, self.cfg)
+            # The description is a nice-to-have for the prompt; never let
+            # fetching it block the launch.
+            description = self.jira.description(issue.key)
+        except Exception:  # noqa: BLE001
+            description = ""
+        try:
+            pane = launch_claude(issue, self.cfg, description)
         except Exception as e:  # noqa: BLE001
             self.call_from_thread(self.notify, t("launch_failed", error=e), severity="error")
             return
