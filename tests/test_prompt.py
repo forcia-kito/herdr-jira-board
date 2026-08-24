@@ -64,7 +64,7 @@ def test_initial_prompt_includes_issue_fields(monkeypatch):
 def test_initial_prompt_puts_description_before_the_instruction(monkeypatch):
     monkeypatch.setattr(board, "handoff_note", lambda key: "")
     prompt = board.initial_prompt(ISSUE, CFG, "the description body")
-    instruction = board.t("prompt_instruction")
+    instruction = board.t("prompt_instruction", lines=board.t("status_lines"))
     assert "the description body" in prompt
     assert prompt.index("the description body") < prompt.index(instruction)
 

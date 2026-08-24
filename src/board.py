@@ -118,6 +118,14 @@ MESSAGES: dict[str, dict[str, str]] = {
     "launching": {"en": "Starting a session for {key}…", "ja": "{key} のセッションを起動しています…"},
     "focus_failed": {"en": "{key}: cannot focus the session: {error}",
                      "ja": "{key}: セッションへ移動できません: {error}"},
+    "status_requested": {"en": "{key}: asked the session where it stands",
+                         "ja": "{key}: セッションに現況を尋ねました"},
+    "status_skipped": {
+        "en": "{key}: the session is busy ({status}); went there without asking",
+        "ja": "{key}: セッションが応答中（{status}）のため、現況は尋ねずに移動しました",
+    },
+    "status_failed": {"en": "{key}: could not ask the session for its status: {error}",
+                      "ja": "{key}: セッションに現況を尋ねられません: {error}"},
     "launch_failed": {"en": "Failed to launch session: {error}", "ja": "セッション起動失敗: {error}"},
     "launched": {"en": "Launched a Claude session for {key}",
                  "ja": "{key} の Claude セッションを起動しました"},
@@ -166,8 +174,25 @@ MESSAGES: dict[str, dict[str, str]] = {
         "ja": "説明:\n{description}",
     },
     "prompt_instruction": {
-        "en": "Start by understanding the issue and proposing an approach.",
-        "ja": "まず課題内容を把握し、作業方針を提案してください。",
+        "en": ("Open with these three lines, then understand the issue and propose an "
+               "approach:\n{lines}"),
+        "ja": ("はじめに次の3行で現況を示し、そのうえで課題内容を把握して作業方針を提案してください:\n"
+               "{lines}"),
+    },
+    "status_lines": {
+        "en": ("- Done so far: …\n"
+               "- Next: …\n"
+               "- Waiting on: … (\"none\" when nothing blocks it)"),
+        "ja": ("- 今どこまで: …\n"
+               "- 次は何: …\n"
+               "- 何待ち: …（無ければ「なし」）"),
+    },
+    "status_prompt": {
+        "en": ("Where does this issue stand? Answer with these three lines and nothing "
+               "else, from what this session has done so far. Don't start any work yet:\n"
+               "{lines}"),
+        "ja": ("この課題の現況を、次の3行だけで答えてください（これまでのこのセッションの作業が根拠）。"
+               "まだ作業は始めないでください:\n{lines}"),
     },
     "description_truncated": {"en": "… (truncated)", "ja": "…（以下省略）"},
 }
@@ -201,6 +226,11 @@ STATUS_ICONS = {
     "done": "[green]✔ done[/]",
     "idle": "[dim]○ idle[/]",
 }
+
+# Statuses in which an agent sits at its own prompt, so a prompt can be sent.
+# "blocked" / "waiting" mean it is asking the user something: text sent then
+# answers that dialog instead.
+READY_STATUSES = ("idle", "done")
 
 
 # ---------------------------------------------------------------- config / state
@@ -594,10 +624,31 @@ def initial_prompt(issue: Issue, cfg: Config, description: str = "") -> str:
                due=issue.duedate or "-", url=f"{cfg.site}/browse/{issue.key}")]
     if description:
         parts.append(t("prompt_description", description=clip_description(description)))
-    parts.append(t("prompt_instruction"))
+    parts.append(t("prompt_instruction", lines=t("status_lines")))
     if note := handoff_note(issue.key):
         parts.append(note)
     return "\n\n".join(parts)
+
+
+def status_prompt() -> str:
+    """What an already running session is asked when its card is opened again."""
+    return t("status_prompt", lines=t("status_lines"))
+
+
+def send_prompt(pane_id: str, prompt: str) -> None:
+    """Send a prompt to an agent waiting at its prompt, and let it start working."""
+    try:
+        herdr("agent", "prompt", pane_id, prompt, "--wait", "--until", "working",
+              "--timeout", "30000")
+    except subprocess.CalledProcessError:
+        # The text usually lands but the submitting Enter can be swallowed.
+        # Give the agent a moment, then press Enter instead of resending the
+        # text (a resend would duplicate the prompt in the composer).
+        try:
+            herdr("agent", "wait", pane_id, "--until", "working", "--timeout", "10000")
+        except subprocess.CalledProcessError:
+            herdr("agent", "send-keys", pane_id, "enter")
+            herdr("agent", "wait", pane_id, "--until", "working", "--timeout", "30000")
 
 
 def launch_claude(issue: Issue, cfg: Config, description: str = "") -> str:
@@ -617,19 +668,7 @@ def launch_claude(issue: Issue, cfg: Config, description: str = "") -> str:
         # Claude may not accept input immediately after start; wait until it is
         # idle (prompt ready), then send and confirm the working transition.
         herdr("agent", "wait", str(pane_id), "--until", "idle", "--timeout", "60000")
-        prompt = initial_prompt(issue, cfg, description)
-        try:
-            herdr("agent", "prompt", str(pane_id), prompt, "--wait", "--until", "working",
-                  "--timeout", "30000")
-        except subprocess.CalledProcessError:
-            # The text usually lands but the submitting Enter can be swallowed.
-            # Give the agent a moment, then press Enter instead of resending the
-            # text (a resend would duplicate the prompt in the composer).
-            try:
-                herdr("agent", "wait", str(pane_id), "--until", "working", "--timeout", "10000")
-            except subprocess.CalledProcessError:
-                herdr("agent", "send-keys", str(pane_id), "enter")
-                herdr("agent", "wait", str(pane_id), "--until", "working", "--timeout", "30000")
+        send_prompt(str(pane_id), initial_prompt(issue, cfg, description))
     except subprocess.CalledProcessError as e:
         # Don't leave the empty tab behind on failure
         tab_id = find_key(tab, "tab_id")
@@ -1109,7 +1148,11 @@ class BoardApp(App):
 
     @work(thread=True)
     def focus_session(self, key: str, pane: str) -> None:
-        """Focus the tab of an existing session."""
+        """Focus an existing session's tab and ask it where the issue stands.
+
+        Nothing is sent while the agent is working or waiting on the user, so
+        going back to a running session never interrupts it.
+        """
         try:
             tab_id = find_key(herdr("pane", "get", pane), "tab_id")
             if not tab_id:
@@ -1118,6 +1161,19 @@ class BoardApp(App):
         except Exception as e:  # noqa: BLE001
             self.call_from_thread(
                 self.notify, t("focus_failed", key=key, error=e), severity="error")
+            return
+        status = agent_statuses().get(pane, "")
+        if status not in READY_STATUSES:
+            self.call_from_thread(
+                self.notify, t("status_skipped", key=key, status=status or "-"))
+            return
+        try:
+            send_prompt(pane, status_prompt())
+        except Exception as e:  # noqa: BLE001
+            self.call_from_thread(
+                self.notify, t("status_failed", key=key, error=e), severity="error")
+            return
+        self.call_from_thread(self.notify, t("status_requested", key=key))
 
     @work(thread=True)
     def run_launch(self, issue: Issue) -> None:

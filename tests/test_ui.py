@@ -191,3 +191,42 @@ async def test_failed_card_does_not_stop_the_others(app, monkeypatch):
         assert executed == [("KAN-2", "21")]
         # The failing card gives up its staged move; the other one still went through.
         assert failing.pending_target is None
+
+
+def running_session(app, monkeypatch, status):
+    """Give KAN-1 a live session in the given agent status, and record the sends."""
+    sent = []
+    app.sessions = {"KAN-1": "w1:p5"}
+    monkeypatch.setattr(board, "agent_statuses", lambda: {"w1:p5": status})
+    monkeypatch.setattr(board, "find_session_pane", lambda key: None)
+    monkeypatch.setattr(board, "herdr",
+                        lambda *args: {"result": {"pane": {"tab_id": "w1:t9"}}})
+    monkeypatch.setattr(board, "send_prompt", lambda pane, prompt: sent.append((pane, prompt)))
+    return sent
+
+
+@pytest.mark.asyncio
+async def test_enter_on_an_idle_session_asks_where_it_stands(app, monkeypatch):
+    sent = running_session(app, monkeypatch, "idle")
+    async with app.run_test() as pilot:
+        await wait_for_cards(app, pilot)
+        card = next(c for c in app.query(board.Card) if c.issue.key == "KAN-1")
+        card.focus()
+        await pilot.pause()
+        await pilot.press("enter")
+        await wait_for(pilot, lambda: sent)
+        assert sent == [("w1:p5", board.status_prompt())]
+
+
+@pytest.mark.asyncio
+async def test_enter_on_a_working_session_does_not_interrupt_it(app, monkeypatch):
+    sent = running_session(app, monkeypatch, "working")
+    async with app.run_test() as pilot:
+        await wait_for_cards(app, pilot)
+        card = next(c for c in app.query(board.Card) if c.issue.key == "KAN-1")
+        card.focus()
+        await pilot.pause()
+        await pilot.press("enter")
+        for _ in range(10):
+            await pilot.pause(0.05)
+        assert sent == []
