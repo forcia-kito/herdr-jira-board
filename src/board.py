@@ -90,6 +90,14 @@ MESSAGES: dict[str, dict[str, str]] = {
     "pick_transition": {"en": "Select a transition for [b]{key}[/b]:",
                         "ja": "[b]{key}[/b] のトランジションを選択:"},
     "fetch_failed": {"en": "Failed to fetch from Jira: {error}", "ja": "Jira 取得失敗: {error}"},
+    "config_reload_failed": {
+        "en": "config.toml could not be read, keeping the previous settings: {error}",
+        "ja": "config.toml を読めませんでした。前の設定を使い続けます: {error}",
+    },
+    "language_needs_restart": {
+        "en": "`language` changed; restart the board to relabel the key bindings.",
+        "ja": "`language` が変更されました。キー表示を切り替えるにはボードを再起動してください。",
+    },
     "transitions_failed": {"en": "Failed to fetch transitions: {error}",
                            "ja": "トランジション取得失敗: {error}"},
     "no_transition": {"en": "{key}: no transition leads to this column",
@@ -817,8 +825,40 @@ class BoardApp(App):
 
     # ---- data loading
 
+    def reload_config(self) -> None:
+        """Pick up config.toml edits without restarting the board.
+
+        This runs on every refresh, so a half-written or broken file must not
+        take the board down: the previous settings stay in place and the error
+        is reported instead.
+        """
+        language_before = LANG
+        try:
+            cfg = Config.load()
+        except (Exception, SystemExit) as e:  # noqa: BLE001
+            # SystemExit covers the file going missing mid-edit; Config.load
+            # raises it rather than an ordinary exception.
+            self.call_from_thread(self.notify, t("config_reload_failed", error=e),
+                                  severity="error")
+            return
+        # The HTTP client bakes in the credentials, so it only needs rebuilding
+        # when those change. Everything else is read from cfg on each use.
+        if (cfg.site, cfg.email, cfg.api_token) != (
+                self.cfg.site, self.cfg.email, self.cfg.api_token):
+            previous, self.jira = self.jira, Jira(cfg)
+            previous.http.close()
+        else:
+            self.jira.cfg = cfg
+        self.cfg = cfg
+        if LANG != language_before:
+            # Key-binding descriptions were fixed at class-definition time and
+            # the Accept-Language header at client-construction time.
+            self.call_from_thread(self.notify, t("language_needs_restart"),
+                                  severity="warning")
+
     @work(thread=True, exclusive=True)
     def action_refresh(self) -> None:
+        self.reload_config()
         try:
             issues = self.jira.search()
         except Exception as e:  # noqa: BLE001
