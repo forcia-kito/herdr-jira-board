@@ -50,6 +50,7 @@ def resolve_config_path() -> Path:
 CONFIG_PATH = resolve_config_path()
 STATE_DIR = Path(os.environ.get("HERDR_PLUGIN_STATE_DIR") or Path.home() / ".local/share/herdr-jira-board")
 SESSIONS_PATH = STATE_DIR / "sessions.json"
+CLAUDE_SESSIONS_PATH = STATE_DIR / "claude_sessions.json"
 COMPANION_PATH = STATE_DIR / "companion.json"
 
 
@@ -129,6 +130,8 @@ MESSAGES: dict[str, dict[str, str]] = {
     "launch_failed": {"en": "Failed to launch session: {error}", "ja": "セッション起動失敗: {error}"},
     "launched": {"en": "Launched a Claude session for {key}",
                  "ja": "{key} の Claude セッションを起動しました"},
+    "resumed": {"en": "Resumed the Claude session for {key}",
+                "ja": "{key} の Claude セッションを再開しました"},
     "no_pane_id": {"en": "Cannot find a pane id in the tab create response: {data}",
                    "ja": "tab create の応答から pane id を特定できません: {data}"},
     "no_tab_id": {"en": "Cannot find tab_id for pane {pane}",
@@ -282,6 +285,19 @@ def load_sessions() -> dict[str, str]:
 def save_sessions(data: dict[str, str]) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     SESSIONS_PATH.write_text(json.dumps(data, indent=1))
+
+
+def load_claude_sessions() -> dict[str, str]:
+    """issue key -> Claude session id, kept so a relaunch can resume the conversation."""
+    try:
+        return json.loads(CLAUDE_SESSIONS_PATH.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def save_claude_sessions(data: dict[str, str]) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    CLAUDE_SESSIONS_PATH.write_text(json.dumps(data, indent=1))
 
 
 def load_companion() -> str:
@@ -651,8 +667,18 @@ def send_prompt(pane_id: str, prompt: str) -> None:
             herdr("agent", "wait", pane_id, "--until", "working", "--timeout", "30000")
 
 
-def launch_claude(issue: Issue, cfg: Config, description: str = "") -> str:
-    """Create a tab for the issue and launch Claude. Returns the pane_id."""
+def launch_claude(issue: Issue, cfg: Config, description: str = "",
+                  resume_session: str = "") -> tuple[str, str, bool]:
+    """Create a tab for the issue and launch Claude.
+
+    With resume_session the recorded Claude session is resumed, so the same
+    conversation comes back after its pane (or herdr itself) was closed; a
+    session Claude no longer knows starts fresh. A resumed session already has
+    its context, so it is asked for the three-line status instead of the
+    initial prompt.
+
+    Returns (pane_id, Claude session id, resumed).
+    """
     project = issue.key.split("-")[0]
     cwd = os.path.expanduser(cfg.project_dirs.get(project, "~"))
     tab = herdr(
@@ -664,11 +690,20 @@ def launch_claude(issue: Issue, cfg: Config, description: str = "") -> str:
         raise RuntimeError(t("no_pane_id", data=tab))
     try:
         agent_name = f"{issue.key.lower()}-{str(pane_id).split(':')[-1].lower()}"
-        start_claude(str(pane_id), agent_name)
+        resumed = False
+        if resume_session:
+            try:
+                started = start_claude(str(pane_id), agent_name, "--resume", resume_session)
+                resumed = True
+            except subprocess.CalledProcessError:
+                started = start_claude(str(pane_id), agent_name)
+        else:
+            started = start_claude(str(pane_id), agent_name)
         # Claude may not accept input immediately after start; wait until it is
         # idle (prompt ready), then send and confirm the working transition.
         herdr("agent", "wait", str(pane_id), "--until", "idle", "--timeout", "60000")
-        send_prompt(str(pane_id), initial_prompt(issue, cfg, description))
+        send_prompt(str(pane_id),
+                    status_prompt() if resumed else initial_prompt(issue, cfg, description))
     except subprocess.CalledProcessError as e:
         # Don't leave the empty tab behind on failure
         tab_id = find_key(tab, "tab_id")
@@ -679,7 +714,8 @@ def launch_claude(issue: Issue, cfg: Config, description: str = "") -> str:
                 pass
         detail = (e.stderr or e.stdout or "").strip()[:200]
         raise RuntimeError(t("herdr_failed", command=" ".join(e.cmd[1:3]), detail=detail)) from e
-    return str(pane_id)
+    session = str((find_key(started, "agent_session") or {}).get("value") or "")
+    return str(pane_id), session, resumed
 
 
 BROWSER_OPENERS = ("wslview", "xdg-open", "open")
@@ -847,6 +883,7 @@ class BoardApp(App):
         self.cfg = Config.load()
         self.jira = Jira(self.cfg)
         self.sessions = load_sessions()
+        self.claude_sessions = load_claude_sessions()
         self._launching: set[str] = set()
         self._moving = False
         self._opening_companion = False
@@ -1154,7 +1191,8 @@ class BoardApp(App):
         going back to a running session never interrupts it.
         """
         try:
-            tab_id = find_key(herdr("pane", "get", pane), "tab_id")
+            pane_info = herdr("pane", "get", pane)
+            tab_id = find_key(pane_info, "tab_id")
             if not tab_id:
                 raise RuntimeError(t("no_tab_id", pane=pane))
             herdr("tab", "focus", str(tab_id))
@@ -1162,6 +1200,10 @@ class BoardApp(App):
             self.call_from_thread(
                 self.notify, t("focus_failed", key=key, error=e), severity="error")
             return
+        # Keep the recorded Claude session current (and backfill sessions
+        # launched before it was recorded), so a relaunch can resume it.
+        if session := (find_key(pane_info, "agent_session") or {}).get("value"):
+            self.record_claude_session(key, str(session))
         status = agent_statuses().get(pane, "")
         if status not in READY_STATUSES:
             self.call_from_thread(
@@ -1184,7 +1226,8 @@ class BoardApp(App):
         except Exception:  # noqa: BLE001
             description = ""
         try:
-            pane = launch_claude(issue, self.cfg, description)
+            pane, session, resumed = launch_claude(
+                issue, self.cfg, description, self.claude_sessions.get(issue.key, ""))
         except Exception as e:  # noqa: BLE001
             self.call_from_thread(self.notify, t("launch_failed", error=e), severity="error")
             return
@@ -1192,8 +1235,17 @@ class BoardApp(App):
             self._launching.discard(issue.key)
         self.sessions[issue.key] = pane
         save_sessions(self.sessions)
-        self.call_from_thread(self.notify, t("launched", key=issue.key))
+        if session:
+            self.record_claude_session(issue.key, session)
+        self.call_from_thread(
+            self.notify, t("resumed" if resumed else "launched", key=issue.key))
         self.update_badges()
+
+    def record_claude_session(self, key: str, session_id: str) -> None:
+        """Remember the issue's Claude session so a later launch can resume it."""
+        if self.claude_sessions.get(key) != session_id:
+            self.claude_sessions[key] = session_id
+            save_claude_sessions(self.claude_sessions)
 
     def action_open_browser(self) -> None:
         card = self.focused_card()

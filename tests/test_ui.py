@@ -230,3 +230,42 @@ async def test_enter_on_a_working_session_does_not_interrupt_it(app, monkeypatch
         for _ in range(10):
             await pilot.pause(0.05)
         assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_enter_resumes_the_recorded_claude_session(app, monkeypatch):
+    launched = []
+
+    def fake_launch(issue, cfg, description="", resume_session=""):
+        launched.append((issue.key, resume_session))
+        return "w1:p7", "sess-new", True
+
+    app.claude_sessions = {"KAN-1": "sess-old"}
+    monkeypatch.setattr(board, "find_session_pane", lambda key: None)
+    monkeypatch.setattr(board.Jira, "description", lambda self, key: "")
+    monkeypatch.setattr(board, "launch_claude", fake_launch)
+    async with app.run_test() as pilot:
+        await wait_for_cards(app, pilot)
+        await pilot.press("enter")  # KAN-1 has the initial focus, no session pane
+        await wait_for(pilot, lambda: launched)
+        assert launched == [("KAN-1", "sess-old")]
+        await wait_for(pilot, lambda: app.claude_sessions.get("KAN-1") == "sess-new")
+        assert board.load_claude_sessions() == {"KAN-1": "sess-new"}
+        assert app.sessions["KAN-1"] == "w1:p7"
+
+
+@pytest.mark.asyncio
+async def test_focusing_a_live_session_records_its_claude_session(app, monkeypatch):
+    sent = running_session(app, monkeypatch, "idle")
+    monkeypatch.setattr(board, "herdr",
+                        lambda *args: {"result": {"pane": {
+                            "tab_id": "w1:t9", "agent_session": {"value": "sess-live"}}}})
+    async with app.run_test() as pilot:
+        await wait_for_cards(app, pilot)
+        card = next(c for c in app.query(board.Card) if c.issue.key == "KAN-1")
+        card.focus()
+        await pilot.pause()
+        await pilot.press("enter")
+        await wait_for(pilot, lambda: sent)
+        assert app.claude_sessions == {"KAN-1": "sess-live"}
+        assert board.load_claude_sessions() == {"KAN-1": "sess-live"}

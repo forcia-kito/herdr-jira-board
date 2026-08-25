@@ -14,4 +14,5 @@ def isolated_state(tmp_path, monkeypatch):
     state = tmp_path / "state"
     monkeypatch.setattr(board, "STATE_DIR", state)
     monkeypatch.setattr(board, "SESSIONS_PATH", state / "sessions.json")
+    monkeypatch.setattr(board, "CLAUDE_SESSIONS_PATH", state / "claude_sessions.json")
     monkeypatch.setattr(board, "COMPANION_PATH", state / "companion.json")
