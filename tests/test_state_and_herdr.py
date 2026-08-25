@@ -23,6 +23,12 @@ def test_sessions_missing_falls_back(tmp_path, monkeypatch):
     assert board.load_sessions() == {}
 
 
+def test_claude_sessions_roundtrip():
+    assert board.load_claude_sessions() == {}
+    board.save_claude_sessions({"KAN-1": "sess-1"})
+    assert board.load_claude_sessions() == {"KAN-1": "sess-1"}
+
+
 def test_find_key_nested():
     data = {"result": {"tabs": [{"pane": {"pane_id": "w1:p9"}}]}}
     assert board.find_key(data, "pane_id") == "w1:p9"
