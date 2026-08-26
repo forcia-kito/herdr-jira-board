@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
 import os
 import shutil
@@ -243,30 +244,42 @@ class Config:
         )
 
 
-def load_sessions() -> dict[str, str]:
-    """issue key -> herdr pane_id"""
+def load_map(path: Path) -> dict[str, str]:
     try:
-        return json.loads(SESSIONS_PATH.read_text())
+        data = json.loads(path.read_text())
     except (OSError, ValueError):
         return {}
+    return data if isinstance(data, dict) else {}
 
 
-def save_sessions(data: dict[str, str]) -> None:
+def update_map(path: Path, set_items: dict[str, str] | None = None,
+               drop_keys: tuple[str, ...] = ()) -> dict[str, str]:
+    """Apply a small change to a JSON map on disk and return the result.
+
+    Several boards can be open at once, each holding its own copy in memory.
+    Writing that copy wholesale would clobber entries the other boards saved
+    in the meantime, so the file is re-read under an exclusive lock and only
+    this change is applied to it.
+    """
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    SESSIONS_PATH.write_text(json.dumps(data, indent=1))
+    with (STATE_DIR / f"{path.name}.lock").open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        data = load_map(path)
+        data.update(set_items or {})
+        for key in drop_keys:
+            data.pop(key, None)
+        path.write_text(json.dumps(data, indent=1))
+    return data
+
+
+def load_sessions() -> dict[str, str]:
+    """issue key -> herdr pane_id"""
+    return load_map(SESSIONS_PATH)
 
 
 def load_claude_sessions() -> dict[str, str]:
     """issue key -> Claude session id, kept so a relaunch can resume the conversation."""
-    try:
-        return json.loads(CLAUDE_SESSIONS_PATH.read_text())
-    except (OSError, ValueError):
-        return {}
-
-
-def save_claude_sessions(data: dict[str, str]) -> None:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    CLAUDE_SESSIONS_PATH.write_text(json.dumps(data, indent=1))
+    return load_map(CLAUDE_SESSIONS_PATH)
 
 
 def load_companion() -> str:
@@ -448,12 +461,17 @@ def find_key(obj, key: str):
     return None
 
 
-def agent_statuses() -> dict[str, str]:
-    """herdr pane_id -> agent status"""
+def agent_statuses() -> dict[str, str] | None:
+    """herdr pane_id -> agent status; None when `herdr agent list` itself failed.
+
+    None and {} differ: {} is a real answer ("no agents running"), while None
+    means the answer is unknown — a recorded pane must not be treated as gone
+    on the strength of a failed call.
+    """
     try:
         data = herdr("agent", "list")
     except (subprocess.CalledProcessError, OSError):
-        return {}
+        return None
     agents = find_key(data, "agents") or []
     out = {}
     for a in agents:
@@ -976,15 +994,24 @@ class BoardApp(App):
     @work(thread=True, exclusive=True, group="badges")
     def update_badges(self) -> None:
         statuses = agent_statuses()
-        self.call_from_thread(self.apply_badges, statuses)
+        # Re-read the state files on every tick, so sessions another board
+        # launched (or dropped) since ours started show up here too.
+        self.call_from_thread(self.apply_badges, statuses,
+                              load_sessions(), load_claude_sessions())
 
-    def apply_badges(self, statuses: dict[str, str]) -> None:
-        for card in self.query(Card):
-            agent = self.sessions.get(card.issue.key)
-            new = statuses.get(agent) if agent else None
-            if new != card.agent_status:
-                card.agent_status = new
-                card.render_card()
+    def apply_badges(self, statuses: dict[str, str] | None,
+                     sessions: dict[str, str], claude_sessions: dict[str, str]) -> None:
+        self.sessions = sessions
+        self.claude_sessions = claude_sessions
+        # With statuses None (herdr unreachable) the badges keep their last
+        # known state instead of flashing off.
+        if statuses is not None:
+            for card in self.query(Card):
+                agent = self.sessions.get(card.issue.key)
+                new = statuses.get(agent) if agent else None
+                if new != card.agent_status:
+                    card.agent_status = new
+                    card.render_card()
         # The badge poll doubles as the preview's refresh tick, so the last
         # reply keeps up while the focused card's session is working.
         self.refresh_preview()
@@ -1219,15 +1246,15 @@ class BoardApp(App):
             self.notify(t("launching_already", key=key))
             return
         pane = self.sessions.get(key)
-        if pane and pane not in agent_statuses():
-            # The recorded pane is gone -> drop the mapping
-            del self.sessions[key]
-            save_sessions(self.sessions)
+        statuses = agent_statuses()
+        # Drop the mapping only when the answer positively lacks the pane. A
+        # None answer (the herdr call failed) proves nothing about the pane.
+        if pane and statuses is not None and pane not in statuses:
+            self.sessions = update_map(SESSIONS_PATH, drop_keys=(key,))
             pane = None
         if not pane and (pane := find_session_pane(key)):
             # Re-associate if the mapping was lost but the issue's agent is alive
-            self.sessions[key] = pane
-            save_sessions(self.sessions)
+            self.sessions = update_map(SESSIONS_PATH, {key: pane})
         if pane:
             self.focus_session(key, pane)
             return
@@ -1274,8 +1301,7 @@ class BoardApp(App):
             return
         finally:
             self._launching.discard(issue.key)
-        self.sessions[issue.key] = pane
-        save_sessions(self.sessions)
+        self.sessions = update_map(SESSIONS_PATH, {issue.key: pane})
         if session:
             self.record_claude_session(issue.key, session)
         self.call_from_thread(
@@ -1285,8 +1311,7 @@ class BoardApp(App):
     def record_claude_session(self, key: str, session_id: str) -> None:
         """Remember the issue's Claude session so a later launch can resume it."""
         if self.claude_sessions.get(key) != session_id:
-            self.claude_sessions[key] = session_id
-            save_claude_sessions(self.claude_sessions)
+            self.claude_sessions = update_map(CLAUDE_SESSIONS_PATH, {key: session_id})
 
     def action_open_browser(self) -> None:
         card = self.focused_card()
@@ -1343,9 +1368,9 @@ if __name__ == "__main__":
     if "--dump" in sys.argv:
         cfg = Config.load()
         issues = Jira(cfg).search()
-        # agent_statuses() returns {} when herdr is unreachable (e.g. run from a
-        # plain shell), which just leaves the badges off.
+        # agent_statuses() returns None when herdr is unreachable (e.g. run from
+        # a plain shell), which just leaves the badges off.
         render = dump_json if "--json" in sys.argv else dump_text
-        print(render(cfg, issues, agent_statuses(), load_sessions()))
+        print(render(cfg, issues, agent_statuses() or {}, load_sessions()))
         sys.exit(0)
     BoardApp().run()

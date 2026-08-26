@@ -4,11 +4,23 @@ import subprocess
 import board
 
 
-def test_sessions_roundtrip(tmp_path, monkeypatch):
-    monkeypatch.setattr(board, "STATE_DIR", tmp_path / "state")
-    monkeypatch.setattr(board, "SESSIONS_PATH", tmp_path / "state" / "sessions.json")
-    board.save_sessions({"KAN-1": "w1:p2"})
+def test_sessions_roundtrip():
+    board.update_map(board.SESSIONS_PATH, {"KAN-1": "w1:p2"})
     assert board.load_sessions() == {"KAN-1": "w1:p2"}
+
+
+def test_update_map_merges_what_another_board_saved():
+    """Boards hold their own copies in memory; a write must not clobber the
+    entries another board saved to the file in the meantime."""
+    board.update_map(board.SESSIONS_PATH, {"KAN-1": "w1:p2"})  # board A
+    board.update_map(board.SESSIONS_PATH, {"KAN-2": "w1:p9"})  # board B
+    assert board.load_sessions() == {"KAN-1": "w1:p2", "KAN-2": "w1:p9"}
+
+
+def test_update_map_drops_only_the_named_key():
+    board.update_map(board.SESSIONS_PATH, {"KAN-1": "w1:p2", "KAN-2": "w1:p9"})
+    board.update_map(board.SESSIONS_PATH, drop_keys=("KAN-1", "KAN-9"))
+    assert board.load_sessions() == {"KAN-2": "w1:p9"}
 
 
 def test_sessions_corrupt_falls_back(tmp_path, monkeypatch):
@@ -25,7 +37,7 @@ def test_sessions_missing_falls_back(tmp_path, monkeypatch):
 
 def test_claude_sessions_roundtrip():
     assert board.load_claude_sessions() == {}
-    board.save_claude_sessions({"KAN-1": "sess-1"})
+    board.update_map(board.CLAUDE_SESSIONS_PATH, {"KAN-1": "sess-1"})
     assert board.load_claude_sessions() == {"KAN-1": "sess-1"}
 
 
@@ -49,6 +61,17 @@ def test_agent_statuses(monkeypatch):
     ]}}
     monkeypatch.setattr(board.subprocess, "run", fake_run(payload))
     assert board.agent_statuses() == {"w1:p1": "working", "w1:p2": "idle"}
+
+
+def test_agent_statuses_none_when_the_call_fails(monkeypatch):
+    """None (unknown) and {} (no agents) must stay distinct: a failed call
+    must not make every recorded pane look gone."""
+
+    def boom(*args, **kwargs):
+        raise subprocess.CalledProcessError(1, "herdr")
+
+    monkeypatch.setattr(board.subprocess, "run", boom)
+    assert board.agent_statuses() is None
 
 
 def test_find_session_pane(monkeypatch):

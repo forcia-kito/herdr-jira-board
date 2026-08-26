@@ -58,7 +58,7 @@ def test_text_badges_only_issues_with_a_session():
 
 
 def test_text_omits_badges_when_herdr_is_unreachable():
-    # agent_statuses() returns {} outside herdr; sessions.json may still list panes.
+    # Outside herdr the dump passes {} for statuses; sessions.json may still list panes.
     out = board.dump_text(CFG, ISSUES, {}, SESSIONS)
     assert "<" not in out
 
