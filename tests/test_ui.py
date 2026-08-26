@@ -193,43 +193,38 @@ async def test_failed_card_does_not_stop_the_others(app, monkeypatch):
         assert failing.pending_target is None
 
 
-def running_session(app, monkeypatch, status):
-    """Give KAN-1 a live session in the given agent status, and record the sends."""
-    sent = []
+def running_session(app, monkeypatch, status, pane_payload=None):
+    """Give KAN-1 a live session in the given agent status, and record herdr calls."""
+    calls = []
+    payload = pane_payload or {"result": {"pane": {"tab_id": "w1:t9"}}}
     app.sessions = {"KAN-1": "w1:p5"}
     monkeypatch.setattr(board, "agent_statuses", lambda: {"w1:p5": status})
     monkeypatch.setattr(board, "find_session_pane", lambda key: None)
-    monkeypatch.setattr(board, "herdr",
-                        lambda *args: {"result": {"pane": {"tab_id": "w1:t9"}}})
-    monkeypatch.setattr(board, "send_prompt", lambda pane, prompt: sent.append((pane, prompt)))
-    return sent
+
+    def fake_herdr(*args):
+        calls.append(list(args))
+        return payload
+
+    monkeypatch.setattr(board, "herdr", fake_herdr)
+    monkeypatch.setattr(board, "send_prompt",
+                        lambda pane, prompt: calls.append(["agent", "prompt", pane, prompt]))
+    return calls
 
 
 @pytest.mark.asyncio
-async def test_enter_on_an_idle_session_asks_where_it_stands(app, monkeypatch):
-    sent = running_session(app, monkeypatch, "idle")
+@pytest.mark.parametrize("status", ["idle", "working"])
+async def test_enter_goes_to_the_session_without_sending_anything(app, monkeypatch, status):
+    calls = running_session(app, monkeypatch, status)
     async with app.run_test() as pilot:
         await wait_for_cards(app, pilot)
         card = next(c for c in app.query(board.Card) if c.issue.key == "KAN-1")
         card.focus()
         await pilot.pause()
         await pilot.press("enter")
-        await wait_for(pilot, lambda: sent)
-        assert sent == [("w1:p5", board.status_prompt())]
-
-
-@pytest.mark.asyncio
-async def test_enter_on_a_working_session_does_not_interrupt_it(app, monkeypatch):
-    sent = running_session(app, monkeypatch, "working")
-    async with app.run_test() as pilot:
-        await wait_for_cards(app, pilot)
-        card = next(c for c in app.query(board.Card) if c.issue.key == "KAN-1")
-        card.focus()
-        await pilot.pause()
-        await pilot.press("enter")
+        await wait_for(pilot, lambda: ["tab", "focus", "w1:t9"] in calls)
         for _ in range(10):
             await pilot.pause(0.05)
-        assert sent == []
+        assert not any(c[:2] == ["agent", "prompt"] for c in calls)
 
 
 @pytest.mark.asyncio
@@ -256,16 +251,41 @@ async def test_enter_resumes_the_recorded_claude_session(app, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_focusing_a_live_session_records_its_claude_session(app, monkeypatch):
-    sent = running_session(app, monkeypatch, "idle")
-    monkeypatch.setattr(board, "herdr",
-                        lambda *args: {"result": {"pane": {
-                            "tab_id": "w1:t9", "agent_session": {"value": "sess-live"}}}})
+    running_session(app, monkeypatch, "idle",
+                    pane_payload={"result": {"pane": {
+                        "tab_id": "w1:t9", "agent_session": {"value": "sess-live"}}}})
     async with app.run_test() as pilot:
         await wait_for_cards(app, pilot)
         card = next(c for c in app.query(board.Card) if c.issue.key == "KAN-1")
         card.focus()
         await pilot.pause()
         await pilot.press("enter")
-        await wait_for(pilot, lambda: sent)
-        assert app.claude_sessions == {"KAN-1": "sess-live"}
+        await wait_for(pilot, lambda: app.claude_sessions.get("KAN-1") == "sess-live")
         assert board.load_claude_sessions() == {"KAN-1": "sess-live"}
+
+
+@pytest.mark.asyncio
+async def test_preview_shows_the_last_reply_of_the_focused_card(app, monkeypatch):
+    app.claude_sessions = {"KAN-1": "sess-1"}
+    monkeypatch.setattr(board, "transcript_path", lambda sid: board.Path("/x/sess-1.jsonl"))
+    monkeypatch.setattr(board, "last_assistant_text", lambda path: "did the thing")
+    async with app.run_test() as pilot:
+        await wait_for_cards(app, pilot)
+        # KAN-1 gets the initial focus, so its preview appears on its own
+        await wait_for(pilot, lambda: app.query_one(board.Preview).display)
+        text = app.query_one("#preview-text", board.Static)
+        assert "did the thing" in str(text.render())
+        # KAN-2 has no session: moving to it hides the preview
+        await pilot.press("down")
+        await wait_for(pilot, lambda: not app.query_one(board.Preview).display)
+
+
+@pytest.mark.asyncio
+async def test_preview_hides_when_the_transcript_has_no_reply_yet(app, monkeypatch):
+    app.claude_sessions = {"KAN-1": "sess-1"}
+    monkeypatch.setattr(board, "transcript_path", lambda sid: None)
+    async with app.run_test() as pilot:
+        await wait_for_cards(app, pilot)
+        for _ in range(10):
+            await pilot.pause(0.05)
+        assert not app.query_one(board.Preview).display

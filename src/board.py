@@ -8,6 +8,8 @@
 - Move cards between columns via drag & drop or arrow keys (runs Jira transitions)
 - Enter launches a Claude session for the focused card in a new herdr tab
 - Polls `herdr agent list` to show session status badges on cards
+- Previews the focused card's session — its last Claude reply, read straight
+  from the transcript, so looking never costs the session a turn
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from datetime import date
 from pathlib import Path
 
 import httpx
+from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -119,14 +122,7 @@ MESSAGES: dict[str, dict[str, str]] = {
     "launching": {"en": "Starting a session for {key}…", "ja": "{key} のセッションを起動しています…"},
     "focus_failed": {"en": "{key}: cannot focus the session: {error}",
                      "ja": "{key}: セッションへ移動できません: {error}"},
-    "status_requested": {"en": "{key}: asked the session where it stands",
-                         "ja": "{key}: セッションに現況を尋ねました"},
-    "status_skipped": {
-        "en": "{key}: the session is busy ({status}); went there without asking",
-        "ja": "{key}: セッションが応答中（{status}）のため、現況は尋ねずに移動しました",
-    },
-    "status_failed": {"en": "{key}: could not ask the session for its status: {error}",
-                      "ja": "{key}: セッションに現況を尋ねられません: {error}"},
+    "preview_title": {"en": "{key} — last reply", "ja": "{key} の最後の返答"},
     "launch_failed": {"en": "Failed to launch session: {error}", "ja": "セッション起動失敗: {error}"},
     "launched": {"en": "Launched a Claude session for {key}",
                  "ja": "{key} の Claude セッションを起動しました"},
@@ -176,27 +172,6 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "Description:\n{description}",
         "ja": "説明:\n{description}",
     },
-    "prompt_instruction": {
-        "en": ("Open with these three lines, then understand the issue and propose an "
-               "approach:\n{lines}"),
-        "ja": ("はじめに次の3行で現況を示し、そのうえで課題内容を把握して作業方針を提案してください:\n"
-               "{lines}"),
-    },
-    "status_lines": {
-        "en": ("- Done so far: …\n"
-               "- Next: …\n"
-               "- Waiting on: … (\"none\" when nothing blocks it)"),
-        "ja": ("- 今どこまで: …\n"
-               "- 次は何: …\n"
-               "- 何待ち: …（無ければ「なし」）"),
-    },
-    "status_prompt": {
-        "en": ("Where does this issue stand? Answer with these three lines and nothing "
-               "else, from what this session has done so far. Don't start any work yet:\n"
-               "{lines}"),
-        "ja": ("この課題の現況を、次の3行だけで答えてください（これまでのこのセッションの作業が根拠）。"
-               "まだ作業は始めないでください:\n{lines}"),
-    },
     "description_truncated": {"en": "… (truncated)", "ja": "…（以下省略）"},
 }
 
@@ -229,12 +204,6 @@ STATUS_ICONS = {
     "done": "[green]✔ done[/]",
     "idle": "[dim]○ idle[/]",
 }
-
-# Statuses in which an agent sits at its own prompt, so a prompt can be sent.
-# "blocked" / "waiting" mean it is asking the user something: text sent then
-# answers that dialog instead.
-READY_STATUSES = ("idle", "done")
-
 
 # ---------------------------------------------------------------- config / state
 
@@ -424,10 +393,10 @@ def adf_to_text(node: object) -> str:
 DESCRIPTION_LIMIT = 3000
 
 
-def clip_description(text: str) -> str:
-    if len(text) <= DESCRIPTION_LIMIT:
+def clip_description(text: str, limit: int = DESCRIPTION_LIMIT) -> str:
+    if len(text) <= limit:
         return text
-    return text[:DESCRIPTION_LIMIT] + t("description_truncated")
+    return text[:limit] + t("description_truncated")
 
 
 def group_by_status(issues: list[Issue], order: list[str]) -> list[tuple[str, list[Issue]]]:
@@ -625,6 +594,47 @@ def transcript_path(session_id: str) -> Path | None:
         return None
 
 
+PREVIEW_LIMIT = 2000
+TRANSCRIPT_TAIL_BYTES = 256 * 1024
+
+
+def last_assistant_text(path: Path) -> str:
+    """The last assistant text message in a Claude Code transcript ("" when none).
+
+    Transcripts grow to megabytes, so only the tail is read. Entries whose
+    content is tool calls only (no text) are skipped, as are subagent
+    ("sidechain") entries.
+    """
+    try:
+        with path.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - TRANSCRIPT_TAIL_BYTES))
+            lines = f.read().decode("utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    for line in reversed(lines):
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(entry, dict) or entry.get("type") != "assistant" or entry.get("isSidechain"):
+            continue
+        message = entry.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            texts = [content]
+        elif isinstance(content, list):
+            texts = [part.get("text", "") for part in content
+                     if isinstance(part, dict) and part.get("type") == "text"]
+        else:
+            continue
+        if text := "\n".join(filter(None, texts)).strip():
+            return text
+    return ""
+
+
 def handoff_note(issue_key: str) -> str:
     """Point the new session at the transcripts of the sessions next to the board."""
     lines = [f"- {path} (cwd: {pane['cwd'] or '-'})"
@@ -640,15 +650,9 @@ def initial_prompt(issue: Issue, cfg: Config, description: str = "") -> str:
                due=issue.duedate or "-", url=f"{cfg.site}/browse/{issue.key}")]
     if description:
         parts.append(t("prompt_description", description=clip_description(description)))
-    parts.append(t("prompt_instruction", lines=t("status_lines")))
     if note := handoff_note(issue.key):
         parts.append(note)
     return "\n\n".join(parts)
-
-
-def status_prompt() -> str:
-    """What an already running session is asked when its card is opened again."""
-    return t("status_prompt", lines=t("status_lines"))
 
 
 def send_prompt(pane_id: str, prompt: str) -> None:
@@ -674,8 +678,7 @@ def launch_claude(issue: Issue, cfg: Config, description: str = "",
     With resume_session the recorded Claude session is resumed, so the same
     conversation comes back after its pane (or herdr itself) was closed; a
     session Claude no longer knows starts fresh. A resumed session already has
-    its context, so it is asked for the three-line status instead of the
-    initial prompt.
+    its context on screen, so nothing is sent to it.
 
     Returns (pane_id, Claude session id, resumed).
     """
@@ -702,8 +705,8 @@ def launch_claude(issue: Issue, cfg: Config, description: str = "",
         # Claude may not accept input immediately after start; wait until it is
         # idle (prompt ready), then send and confirm the working transition.
         herdr("agent", "wait", str(pane_id), "--until", "idle", "--timeout", "60000")
-        send_prompt(str(pane_id),
-                    status_prompt() if resumed else initial_prompt(issue, cfg, description))
+        if not resumed:
+            send_prompt(str(pane_id), initial_prompt(issue, cfg, description))
     except subprocess.CalledProcessError as e:
         # Don't leave the empty tab behind on failure
         tab_id = find_key(tab, "tab_id")
@@ -816,6 +819,14 @@ class Column(VerticalScroll):
         self.border_title = title
 
 
+class Preview(VerticalScroll, can_focus=False):
+    """The focused card's session at a glance: its last Claude reply.
+
+    The text comes straight from the session's transcript, so reading it never
+    costs the session a turn (unlike prompting it for a status).
+    """
+
+
 class StatusDivider(Static):
     """A label separating the status groups inside a column."""
 
@@ -863,6 +874,8 @@ class BoardApp(App):
     Card.dragging { opacity: 0.6; }
     Card.pending { border: round $warning; }
     .status-divider { margin-bottom: 1; text-align: center; }
+    Preview { display: none; height: auto; max-height: 12; border: round $primary;
+              margin: 0 1; padding: 0 1; }
     #picker { width: 60; height: auto; max-height: 20; border: thick $accent; background: $surface; padding: 1; }
     TransitionPicker { align: center middle; }
     """
@@ -893,6 +906,8 @@ class BoardApp(App):
         with Horizontal(id="columns"):
             for cat, title in CATEGORY_COLUMNS:
                 yield Column(cat, title)
+        with Preview(id="preview"):
+            yield Static(id="preview-text")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -970,6 +985,42 @@ class BoardApp(App):
             if new != card.agent_status:
                 card.agent_status = new
                 card.render_card()
+        # The badge poll doubles as the preview's refresh tick, so the last
+        # reply keeps up while the focused card's session is working.
+        self.refresh_preview()
+
+    # ---- session preview
+
+    def on_descendant_focus(self, event: events.DescendantFocus) -> None:
+        self.refresh_preview()
+
+    def refresh_preview(self) -> None:
+        """Show the focused card's last session reply, or hide the pane."""
+        card = self.focused_card()
+        session = self.claude_sessions.get(card.issue.key, "") if card else ""
+        if not session:
+            self.query_one(Preview).display = False
+            return
+        self.load_preview(card.issue.key, session)
+
+    @work(thread=True, exclusive=True, group="preview")
+    def load_preview(self, key: str, session_id: str) -> None:
+        path = transcript_path(session_id)
+        text = last_assistant_text(path) if path else ""
+        self.call_from_thread(self.show_preview, key, text)
+
+    def show_preview(self, key: str, text: str) -> None:
+        card = self.focused_card()
+        if not card or card.issue.key != key:
+            return  # focus moved on; the current card's own load owns the pane
+        preview = self.query_one(Preview)
+        if not text:
+            preview.display = False
+            return
+        preview.border_title = t("preview_title", key=key)
+        self.query_one("#preview-text", Static).update(
+            Text(clip_description(text, PREVIEW_LIMIT)))
+        preview.display = True
 
     # ---- card movement / transitions
 
@@ -1018,6 +1069,7 @@ class BoardApp(App):
                 self.cancel_move(card)
         elif self.focused_card():
             self.set_focus(None)
+            self.refresh_preview()
 
     def mount_card_in(self, card: Card, category: str) -> None:
         column = next(c for c in self.query(Column) if c.category == category)
@@ -1185,10 +1237,11 @@ class BoardApp(App):
 
     @work(thread=True)
     def focus_session(self, key: str, pane: str) -> None:
-        """Focus an existing session's tab and ask it where the issue stands.
+        """Focus an existing session's tab.
 
-        Nothing is sent while the agent is working or waiting on the user, so
-        going back to a running session never interrupts it.
+        Nothing is sent to the agent — the board's preview pane already shows
+        its last reply — so going back to a session never interrupts it and
+        never costs it a turn.
         """
         try:
             pane_info = herdr("pane", "get", pane)
@@ -1204,18 +1257,6 @@ class BoardApp(App):
         # launched before it was recorded), so a relaunch can resume it.
         if session := (find_key(pane_info, "agent_session") or {}).get("value"):
             self.record_claude_session(key, str(session))
-        status = agent_statuses().get(pane, "")
-        if status not in READY_STATUSES:
-            self.call_from_thread(
-                self.notify, t("status_skipped", key=key, status=status or "-"))
-            return
-        try:
-            send_prompt(pane, status_prompt())
-        except Exception as e:  # noqa: BLE001
-            self.call_from_thread(
-                self.notify, t("status_failed", key=key, error=e), severity="error")
-            return
-        self.call_from_thread(self.notify, t("status_requested", key=key))
 
     @work(thread=True)
     def run_launch(self, issue: Issue) -> None:

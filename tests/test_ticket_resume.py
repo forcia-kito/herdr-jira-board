@@ -52,9 +52,8 @@ def test_launch_claude_resumes_the_recorded_session(monkeypatch):
     assert board.launch_claude(ISSUE, CFG, "desc",
                                resume_session="sess-old") == ("w1:p7", "sess-new", True)
     assert fake.agent_starts()[0][-3:] == ["--", "--resume", "sess-old"]
-    # The resumed conversation already has its context: ask where it stands
-    # instead of restating the issue.
-    assert fake.prompts() == [board.status_prompt()]
+    # The resumed conversation is already on screen: nothing is sent to it.
+    assert fake.prompts() == []
 
 
 def test_launch_claude_starts_fresh_when_the_resume_fails(monkeypatch):

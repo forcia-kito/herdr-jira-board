@@ -26,10 +26,11 @@ session for any card — with live session status badges on the board.
   session (`c`) hands its transcript
   over, so the new session picks up what you already discussed
   ([details](#the-companion-session))
-- `Enter` on a card that already has a session goes to its tab and asks it for
-  three lines only — done so far / next / waiting on — so you don't have to
-  keep the state of every parallel issue in your head
-  ([details](#the-three-line-status))
+- Focusing a card previews its session's **last reply** at the bottom of the
+  board, read straight from the transcript — nothing is sent to the session,
+  and you don't have to keep the state of every parallel issue in your head
+  ([details](#the-session-preview)). `Enter` on a card that already has a
+  session goes to its tab
 - A column that mixes several statuses (typically In Progress) groups its
   cards per status under a divider; the order is configurable
   (`status_order`)
@@ -118,7 +119,7 @@ description = "Close other tabs"
 | --- | --- |
 | `↑` `↓` | Focus previous / next card |
 | `←` `→` | Stage a move to the adjacent column |
-| `Enter` | Confirm every staged move, or launch a Claude session for the card (go to it and ask for a status when it is already running) |
+| `Enter` | Confirm every staged move, or launch a Claude session for the card (go to its tab when it is already running) |
 | `Esc` | Cancel every staged move / unfocus |
 | `r` | Refresh the board |
 | `o` | Open the issue in the browser |
@@ -160,24 +161,19 @@ Transcripts are located by session id under
 has no transcript yet (nothing said in it) is skipped, and with nothing linked
 the prompt is unchanged.
 
-### The three-line status
+### The session preview
 
-What `Enter` does depends on whether the card already has a session.
+Focusing a card that has a session previews that session's **last reply** at
+the bottom of the board. The point is to keep the state of parallel issues out
+of your head: coming back to a card shows you where it stands.
 
-- **No session yet** — the session is launched, and its initial prompt has it
-  open with three lines (done so far / next / waiting on) before it goes on to
-  propose an approach. It draws them from the issue and the transcripts handed
-  over to it.
-- **A session already running** — nothing is restarted: the board goes to that
-  tab and asks for the same three lines, which the session answers from the work
-  it has done itself.
+The reply is read straight from the transcript
+(`${CLAUDE_CONFIG_DIR:-~/.claude}/projects/*/<session-id>.jsonl`). **Nothing is
+sent to the session**, so checking on it never costs it a turn and never
+interrupts work in progress. The preview refreshes on the same 5-second tick as
+the status badges, so a working session's latest report keeps up.
 
-The point is to keep the state of parallel issues out of your head: coming back
-to a card tells you where it stands in three lines.
-
-While the agent is working, or waiting on you (`blocked` / `waiting`), the board
-**only goes to the tab and sends nothing** — so it never interrupts work in
-progress, and never answers a dialog Claude is showing with prose.
+Cards without a session, and sessions with no reply yet, show no preview.
 
 ## Reading the board from Claude
 

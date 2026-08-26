@@ -61,12 +61,10 @@ def test_initial_prompt_includes_issue_fields(monkeypatch):
     assert "https://example.atlassian.net/browse/KAN-1" in prompt
 
 
-def test_initial_prompt_puts_description_before_the_instruction(monkeypatch):
+def test_initial_prompt_includes_the_description(monkeypatch):
     monkeypatch.setattr(board, "handoff_note", lambda key: "")
     prompt = board.initial_prompt(ISSUE, CFG, "the description body")
-    instruction = board.t("prompt_instruction", lines=board.t("status_lines"))
     assert "the description body" in prompt
-    assert prompt.index("the description body") < prompt.index(instruction)
 
 
 def test_initial_prompt_without_description_has_no_description_block(monkeypatch):
