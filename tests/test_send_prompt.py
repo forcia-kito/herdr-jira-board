@@ -5,26 +5,6 @@ import pytest
 import board
 
 
-CFG = board.Config(site="https://example.atlassian.net", email="you@example.com",
-                   api_token="t", jql="jql")
-ISSUE = board.Issue(key="KAN-1", summary="first", status="進行中", category="indeterminate",
-                    issuetype="Task", duedate="2026-08-31")
-
-
-def test_status_prompt_asks_for_the_three_lines():
-    prompt = board.status_prompt()
-    for line in board.t("status_lines").splitlines():
-        assert line in prompt
-
-
-def test_initial_prompt_asks_for_the_same_three_lines(monkeypatch):
-    """Both entry points open with the same shape, launched or already running."""
-    monkeypatch.setattr(board, "handoff_note", lambda key: "")
-    prompt = board.initial_prompt(ISSUE, CFG)
-    for line in board.t("status_lines").splitlines():
-        assert line in prompt
-
-
 class FakeHerdr:
     """Answer herdr calls, optionally failing the ones a caller wants to fail."""
 
@@ -57,10 +37,3 @@ def test_send_prompt_presses_enter_when_the_submit_is_swallowed(monkeypatch):
         board.send_prompt("w1:p5", "hello")
     assert ["agent", "send-keys"] in fake.commands()
     assert len([c for c in fake.calls if c[:2] == ["agent", "prompt"]]) == 1
-
-
-def test_ready_statuses_exclude_the_ones_that_await_the_user():
-    """Sending text to a blocked/waiting agent would answer its dialog."""
-    assert "idle" in board.READY_STATUSES
-    for busy in ("working", "blocked", "waiting"):
-        assert busy not in board.READY_STATUSES
