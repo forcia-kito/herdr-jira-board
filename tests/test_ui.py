@@ -197,7 +197,9 @@ def running_session(app, monkeypatch, status, pane_payload=None):
     """Give KAN-1 a live session in the given agent status, and record herdr calls."""
     calls = []
     payload = pane_payload or {"result": {"pane": {"tab_id": "w1:t9"}}}
-    app.sessions = {"KAN-1": "w1:p5"}
+    # On the file too: the badge tick re-reads the state files and would wipe
+    # a mapping that only lives in this board's memory.
+    app.sessions = board.update_map(board.SESSIONS_PATH, {"KAN-1": "w1:p5"})
     monkeypatch.setattr(board, "agent_statuses", lambda: {"w1:p5": status})
     monkeypatch.setattr(board, "find_session_pane", lambda key: None)
 
@@ -228,6 +230,35 @@ async def test_enter_goes_to_the_session_without_sending_anything(app, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_enter_keeps_the_mapping_when_agent_list_fails(app, monkeypatch):
+    """A failed `herdr agent list` says nothing about the pane: don't drop it."""
+    calls = running_session(app, monkeypatch, "idle")
+    monkeypatch.setattr(board, "agent_statuses", lambda: None)
+    async with app.run_test() as pilot:
+        await wait_for_cards(app, pilot)
+        card = next(c for c in app.query(board.Card) if c.issue.key == "KAN-1")
+        card.focus()
+        await pilot.pause()
+        await pilot.press("enter")
+        await wait_for(pilot, lambda: ["tab", "focus", "w1:t9"] in calls)
+        assert app.sessions == {"KAN-1": "w1:p5"}
+        assert board.load_sessions() == {"KAN-1": "w1:p5"}
+
+
+@pytest.mark.asyncio
+async def test_badge_tick_picks_up_what_another_board_saved(app, monkeypatch):
+    monkeypatch.setattr(board, "agent_statuses", lambda: {"w1:p9": "working"})
+    async with app.run_test() as pilot:
+        await wait_for_cards(app, pilot)
+        # another board records a session for KAN-2 straight on the file
+        board.update_map(board.SESSIONS_PATH, {"KAN-2": "w1:p9"})
+        app.update_badges()
+        card = next(c for c in app.query(board.Card) if c.issue.key == "KAN-2")
+        await wait_for(pilot, lambda: card.agent_status == "working")
+        assert app.sessions == {"KAN-2": "w1:p9"}
+
+
+@pytest.mark.asyncio
 async def test_enter_resumes_the_recorded_claude_session(app, monkeypatch):
     launched = []
 
@@ -235,7 +266,7 @@ async def test_enter_resumes_the_recorded_claude_session(app, monkeypatch):
         launched.append((issue.key, resume_session))
         return "w1:p7", "sess-new", True
 
-    app.claude_sessions = {"KAN-1": "sess-old"}
+    app.claude_sessions = board.update_map(board.CLAUDE_SESSIONS_PATH, {"KAN-1": "sess-old"})
     monkeypatch.setattr(board, "find_session_pane", lambda key: None)
     monkeypatch.setattr(board.Jira, "description", lambda self, key: "")
     monkeypatch.setattr(board, "launch_claude", fake_launch)
@@ -266,7 +297,7 @@ async def test_focusing_a_live_session_records_its_claude_session(app, monkeypat
 
 @pytest.mark.asyncio
 async def test_preview_shows_the_last_reply_of_the_focused_card(app, monkeypatch):
-    app.claude_sessions = {"KAN-1": "sess-1"}
+    app.claude_sessions = board.update_map(board.CLAUDE_SESSIONS_PATH, {"KAN-1": "sess-1"})
     monkeypatch.setattr(board, "transcript_path", lambda sid: board.Path("/x/sess-1.jsonl"))
     monkeypatch.setattr(board, "last_assistant_text", lambda path: "did the thing")
     async with app.run_test() as pilot:
@@ -282,7 +313,7 @@ async def test_preview_shows_the_last_reply_of_the_focused_card(app, monkeypatch
 
 @pytest.mark.asyncio
 async def test_preview_hides_when_the_transcript_has_no_reply_yet(app, monkeypatch):
-    app.claude_sessions = {"KAN-1": "sess-1"}
+    app.claude_sessions = board.update_map(board.CLAUDE_SESSIONS_PATH, {"KAN-1": "sess-1"})
     monkeypatch.setattr(board, "transcript_path", lambda sid: None)
     async with app.run_test() as pilot:
         await wait_for_cards(app, pilot)
