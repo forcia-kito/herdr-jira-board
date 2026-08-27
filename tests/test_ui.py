@@ -329,6 +329,54 @@ async def test_preview_shows_the_last_reply_of_the_focused_card(app, monkeypatch
         await wait_for(pilot, lambda: not app.query_one(board.Preview).display)
 
 
+def with_preview(app, monkeypatch, text="did the thing"):
+    """Give KAN-1 a session whose transcript holds a reply."""
+    app.claude_sessions = board.update_map(board.CLAUDE_SESSIONS_PATH, {"KAN-1": "sess-1"})
+    monkeypatch.setattr(board, "transcript_path", lambda sid: board.Path("/x/sess-1.jsonl"))
+    monkeypatch.setattr(board, "last_assistant_text", lambda path: text)
+
+
+@pytest.mark.asyncio
+async def test_p_turns_the_preview_off_and_on(app, monkeypatch):
+    with_preview(app, monkeypatch)
+    async with app.run_test() as pilot:
+        await wait_for_cards(app, pilot)
+        await wait_for(pilot, lambda: app.query_one(board.Preview).display)
+        await pilot.press("p")
+        await wait_for(pilot, lambda: not app.query_one(board.Preview).display)
+        await pilot.press("p")
+        await wait_for(pilot, lambda: app.query_one(board.Preview).display)
+
+
+@pytest.mark.asyncio
+async def test_the_badge_tick_keeps_a_disabled_preview_hidden(app, monkeypatch):
+    """The tick refreshes the preview; it must not bring back what `p` hid."""
+    with_preview(app, monkeypatch)
+    async with app.run_test() as pilot:
+        await wait_for_cards(app, pilot)
+        await pilot.press("p")
+        await wait_for(pilot, lambda: not app.query_one(board.Preview).display)
+        app.update_badges()
+        for _ in range(10):
+            await pilot.pause(0.05)
+        assert not app.query_one(board.Preview).display
+
+
+@pytest.mark.asyncio
+async def test_preview_false_starts_hidden(app, monkeypatch):
+    """`preview = false` in the config; `p` still brings it up."""
+    with_preview(app, monkeypatch)
+    app.cfg.preview = False
+    app.preview_enabled = False
+    async with app.run_test() as pilot:
+        await wait_for_cards(app, pilot)
+        for _ in range(10):
+            await pilot.pause(0.05)
+        assert not app.query_one(board.Preview).display
+        await pilot.press("p")
+        await wait_for(pilot, lambda: app.query_one(board.Preview).display)
+
+
 @pytest.mark.asyncio
 async def test_preview_hides_when_the_transcript_has_no_reply_yet(app, monkeypatch):
     app.claude_sessions = board.update_map(board.CLAUDE_SESSIONS_PATH, {"KAN-1": "sess-1"})

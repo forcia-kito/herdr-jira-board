@@ -46,6 +46,11 @@ api_token = ""
 # (LC_ALL / LC_MESSAGES / LANG).
 # language = "en"
 
+# Optional: whether the focused card's session preview (its last Claude reply)
+# starts on. `p` turns it off and on again while the board runs; this only sets
+# what it starts as. Default: true.
+# preview = false
+
 # Optional: working directory for Claude sessions, per Jira project key.
 # Defaults to your home directory when not set.
 [project_dirs]
