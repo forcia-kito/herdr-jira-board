@@ -121,18 +121,22 @@ MESSAGES: dict[str, dict[str, str]] = {
     "transitioned": {"en": "Updated the status of {key}",
                      "ja": "{key} のステータスを更新しました"},
     "phase_label": {"en": "Phase label", "ja": "フェーズラベル"},
-    "pick_phase_label": {"en": "Toggle a phase label on [b]{key}[/b]:",
-                         "ja": "[b]{key}[/b] のフェーズラベルを付け外し:"},
+    "pick_phase_label": {
+        "en": "Phase labels for [b]{key}[/b] — space to tick, enter to apply:",
+        "ja": "[b]{key}[/b] のフェーズラベル — Space で選び、Enter で反映:",
+    },
+    "toggle_phase_label": {"en": "Tick / untick", "ja": "選択の切り替え"},
+    "apply_phase_labels": {"en": "Apply", "ja": "反映"},
     "no_phase_labels": {
         "en": "No phase labels configured; add `phase_labels` to config.toml.",
         "ja": "フェーズラベルが未設定です。config.toml に `phase_labels` を追加してください。",
     },
-    "phase_label_failed": {"en": "{key}: could not update the label: {error}",
+    "phase_label_failed": {"en": "{key}: could not update the labels: {error}",
                            "ja": "{key}: ラベルを更新できませんでした: {error}"},
-    "phase_label_added": {"en": "Added {label} to {key}",
-                          "ja": "{key} に {label} を付けました"},
-    "phase_label_removed": {"en": "Removed {label} from {key}",
-                            "ja": "{key} から {label} を外しました"},
+    "phase_labels_applied": {"en": "{key}: {changes}",
+                             "ja": "{key}: {changes}"},
+    "phase_labels_unchanged": {"en": "{key}: the labels are unchanged",
+                               "ja": "{key}: ラベルは変わっていません"},
     "confirming": {"en": "Confirming the staged moves…", "ja": "仮移動を確定中です…"},
     "launching_already": {"en": "A session for {key} is already starting…",
                           "ja": "{key} のセッションを起動中です…"},
@@ -418,15 +422,18 @@ class Jira:
         r.raise_for_status()
         return r.json().get("transitions", [])
 
-    def set_label(self, key: str, label: str, present: bool) -> None:
-        """Add or remove one label, leaving the issue's other labels alone.
+    def update_labels(self, key: str, add: list[str], remove: list[str]) -> None:
+        """Apply every label change at once, leaving the issue's others alone.
 
-        The `update` verb sends the single change rather than the whole list, so
-        labels other people put on the issue survive.
+        The `update` verb sends the individual changes rather than the whole
+        list, so labels other people put on the issue survive; it also takes as
+        many of them as we like, so a whole picker's worth of ticks and unticks
+        costs one request.
         """
-        verb = "add" if present else "remove"
-        r = self.http.put(f"/rest/api/3/issue/{key}",
-                          json={"update": {"labels": [{verb: label}]}})
+        ops = [{"add": name} for name in add] + [{"remove": name} for name in remove]
+        if not ops:
+            return
+        r = self.http.put(f"/rest/api/3/issue/{key}", json={"update": {"labels": ops}})
         r.raise_for_status()
 
     def do_transition(self, key: str, transition_id: str) -> None:
@@ -518,6 +525,14 @@ def sort_by_phase_label(issues: list[Issue], phase_labels: list[PhaseLabel]) -> 
                    default=len(ranks))
 
     return sorted(issues, key=rank)
+
+
+def describe_label_changes(add: list[str], remove: list[str],
+                           phase_labels: list[PhaseLabel]) -> str:
+    """What changed, in the short names the cards use ("+A +B -C")."""
+    shown = {p.label: p.display for p in phase_labels}
+    return " ".join([f"+{shown.get(name, name)}" for name in add]
+                    + [f"-{shown.get(name, name)}" for name in remove])
 
 
 def phase_labels_of(issue: Issue, phase_labels: list[PhaseLabel]) -> list[PhaseLabel]:
@@ -1058,27 +1073,50 @@ class TransitionPicker(ModalScreen[str | None]):
         self.dismiss(ev.option.id)
 
 
-class PhaseLabelPicker(ModalScreen[str | None]):
-    """Pick which phase label to toggle; returns the Jira label name."""
+class PhaseLabelPicker(ModalScreen["set[str] | None"]):
+    """Tick the phase labels the issue should end up with.
 
-    BINDINGS = [Binding("escape", "dismiss(None)", t("cancel"))]
+    Space edits the ticks locally and enter dismisses with the whole set, so
+    several labels can go on and off in one trip to Jira instead of one each.
+    """
+
+    # OptionList binds enter (and, depending on the version, space) itself, so
+    # these have to be priority bindings or the focused list swallows them.
+    BINDINGS = [
+        Binding("escape", "dismiss(None)", t("cancel")),
+        Binding("space", "toggle", t("toggle_phase_label"), priority=True),
+        Binding("enter", "apply", t("apply_phase_labels"), priority=True),
+    ]
 
     def __init__(self, issue: Issue, phase_labels: list[PhaseLabel]):
         super().__init__()
         self.issue = issue
         self.phase_labels = phase_labels
+        self.ticked = {p.label for p in phase_labels if p.label in issue.labels}
+
+    def rows(self) -> list[Option]:
+        return [Option(f"{'[green]✔[/]' if p.label in self.ticked else '[dim]·[/]'} {p.display}"
+                       f"  [dim]{p.label}[/]", id=p.label)
+                for p in self.phase_labels]
 
     def compose(self) -> ComposeResult:
         with Vertical(id="picker"):
             yield Static(t("pick_phase_label", key=self.issue.key))
-            yield OptionList(*[
-                Option(f"{'[green]✔[/]' if p.label in self.issue.labels else ' '} {p.display}"
-                       f"  [dim]{p.label}[/]", id=p.label)
-                for p in self.phase_labels
-            ])
+            yield OptionList(*self.rows())
 
-    def on_option_list_option_selected(self, ev: OptionList.OptionSelected) -> None:
-        self.dismiss(ev.option.id)
+    def action_toggle(self) -> None:
+        options = self.query_one(OptionList)
+        if (index := options.highlighted) is None:
+            return
+        self.ticked ^= {str(options.get_option_at_index(index).id)}
+        # The tick is part of the option's text, so the row has to be rebuilt;
+        # restore the cursor afterwards or it jumps back to the top.
+        options.clear_options()
+        options.add_options(self.rows())
+        options.highlighted = index
+
+    def action_apply(self) -> None:
+        self.dismiss(self.ticked)
 
 
 # ---------------------------------------------------------------- app
@@ -1442,18 +1480,23 @@ class BoardApp(App):
     @work(group="moves", exclusive=True)
     async def run_phase_label(self, card: Card) -> None:
         key = card.issue.key
-        label = await self.push_screen_wait(
+        ticked = await self.push_screen_wait(
             PhaseLabelPicker(card.issue, self.cfg.phase_labels))
-        if not label:
+        if ticked is None:  # cancelled; an empty set means "take them all off"
             return
-        present = label not in card.issue.labels
+        known = {p.label for p in self.cfg.phase_labels}
+        before = {name for name in card.issue.labels if name in known}
+        add, remove = sorted(ticked - before), sorted(before - ticked)
+        if not add and not remove:
+            self.notify(t("phase_labels_unchanged", key=key))
+            return
         try:
-            await asyncio.to_thread(self.jira.set_label, key, label, present)
+            await asyncio.to_thread(self.jira.update_labels, key, add, remove)
         except Exception as e:  # noqa: BLE001
             self.notify(t("phase_label_failed", key=key, error=e), severity="error")
             return
-        self.notify(t("phase_label_added" if present else "phase_label_removed",
-                      key=key, label=label))
+        self.notify(t("phase_labels_applied", key=key,
+                      changes=describe_label_changes(add, remove, self.cfg.phase_labels)))
         # Refreshing re-sorts the column, which is the point of the label.
         self.action_refresh()
 
