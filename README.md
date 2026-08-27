@@ -130,7 +130,7 @@ description = "Close other tabs"
 | `r` | Refresh the board |
 | `o` | Open the issue in the browser |
 | `t` | Change the card's status (picker with every transition, same-column ones included) |
-| `l` | Put a phase label on the card, or take it off |
+| `l` | Edit the card's phase labels (space ticks, enter applies) |
 | `c` | Open the companion session beside the board, or jump to it |
 | `p` | Turn the session preview off / on |
 | `q` | Quit |
@@ -164,9 +164,11 @@ label = "jb_waiting"
 display = "waiting"
 ```
 
-`l` on a card opens a picker of these labels, with a check mark next to the
-ones the card already has; picking one toggles it. Only that label changes —
-labels other people put on the issue are left alone.
+`l` on a card opens a picker of these labels, ticked to match what the card
+already carries. `space` ticks and unticks, `enter` applies every change at
+once and `esc` throws them away. Only the labels you edited change — labels
+other people put on the issue are left alone, and the whole picker's worth of
+changes costs a single request.
 
 Cards carrying a phase label sort to the top of their status group, in the
 order the labels are declared, and show `display` next to the status. This is
