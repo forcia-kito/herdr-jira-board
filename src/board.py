@@ -941,6 +941,13 @@ def open_url(url: str) -> None:
         if path:
             subprocess.Popen(
                 [path, url],
+                # The board's own directory can be gone by now — a worktree it
+                # was opened in, removed or moved since. A child inherits that
+                # deleted directory, and on WSL launching a Windows binary from
+                # one fails outright (wslview then opens nothing at all), so
+                # the opener is anchored somewhere that cannot go missing. It
+                # is given an absolute URL and needs no directory of its own.
+                cwd="/",
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
