@@ -72,6 +72,7 @@ def test_json_is_valid_and_keeps_every_field():
     first = data["columns"][0]["issues"][0]
     assert first == {"key": "X-1", "summary": "first", "status": "To Do", "issuetype": "Task",
                      "created": "2026-08-01", "duedate": "2026-08-20", "agent_status": None,
+                     "phase_labels": [],
                      "url": "https://example.atlassian.net/browse/X-1"}
 
     second = data["columns"][1]["issues"][0]

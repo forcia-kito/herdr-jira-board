@@ -34,6 +34,11 @@ session for any card — with live session status badges on the board.
 - A column that mixes several statuses (typically In Progress) groups its
   cards per status under a divider; the order is configurable
   (`status_order`)
+- **Phase labels** (`l`) mark a stage that does not deserve a workflow status
+  of its own — "verifying the effect after release", say. A Jira label is
+  site-wide, so one name works across every project without touching a
+  workflow; labelled cards show the label and sort to the top of their status
+  group ([details](#phase-labels))
 - Session status badges (working / blocked / idle / done) on each card,
   refreshed every 5 seconds via `herdr agent list`
 - Each card shows its created date and due date; overdue is red, due within
@@ -80,8 +85,8 @@ api_token = "<your API token>"
 ```
 
 See the comments in `config.toml.example` for all options
-(`api_token_cmd`, `jql`, `exclude_statuses`, `status_order`, `language`,
-`[project_dirs]`).
+(`api_token_cmd`, `jql`, `exclude_statuses`, `status_order`, `phase_labels`,
+`language`, `[project_dirs]`).
 
 ## Usage
 
@@ -124,6 +129,7 @@ description = "Close other tabs"
 | `r` | Refresh the board |
 | `o` | Open the issue in the browser |
 | `t` | Change the card's status (picker with every transition, same-column ones included) |
+| `l` | Put a phase label on the card, or take it off |
 | `c` | Open the companion session beside the board, or jump to it |
 | `q` | Quit |
 
@@ -135,6 +141,41 @@ to its own column — and `Enter` runs them all, one after another. A card whose
 move needs a transition picker asks for it when its turn comes; a card whose
 transition fails goes back to its original column and the rest still run.
 `←` `→` back to a card's own column takes that single card out of the batch.
+
+### Phase labels
+
+Some stages are not worth a workflow status: "the MR is merged, now watch
+whether it actually helped" is one. Adding a status for it means editing every
+project's workflow, and that is a Jira admin's job — while a Jira label is
+shared across the whole site, so one name covers every project and anyone can
+put it on.
+
+Declare the labels you want the board to manage:
+
+```toml
+[[phase_labels]]
+label = "jb_verifying"     # the label as it exists in Jira
+display = "verifying"      # what the card shows
+
+[[phase_labels]]
+label = "jb_waiting"
+display = "waiting"
+```
+
+`l` on a card opens a picker of these labels, with a check mark next to the
+ones the card already has; picking one toggles it. Only that label changes —
+labels other people put on the issue are left alone.
+
+Cards carrying a phase label sort to the top of their status group, in the
+order the labels are declared, and show `display` next to the status. This is
+independent of `status_order`: the status groups stay where they are and the
+labels only reorder cards inside one of them.
+
+Namespace the labels (`jb_…` above) — Jira labels are shared with every other
+project on the site, so a bare `verifying` would show up in everyone's
+autocomplete. Only `display` reaches the card, so the prefix costs no width.
+A plain string entry is also accepted (`phase_labels = ["verifying"]`) when you
+don't need a separate display name.
 
 ### The companion session
 
