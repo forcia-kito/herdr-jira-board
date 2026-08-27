@@ -7,7 +7,9 @@
 - Three status-category columns (To Do / In Progress / Done)
 - Move cards between columns via drag & drop or arrow keys (runs Jira transitions)
 - Enter launches a Claude session for the focused card in a new herdr tab
-- Polls `herdr agent list` to show session status badges on cards
+- Polls `herdr agent list` to show session status badges on cards, and
+  mirrors agent statuses onto the tab labels of the board's workspace
+  (like the sidebar spaces)
 - Previews the focused card's session — its last Claude reply, read straight
   from the transcript, so looking never costs the session a turn
 """
@@ -204,6 +206,17 @@ STATUS_ICONS = {
     "waiting": "[red]■ waiting[/]",
     "done": "[green]✔ done[/]",
     "idle": "[dim]○ idle[/]",
+}
+
+# Plain-text icons for tab labels. herdr's tab bar shows no agent status of its
+# own (the sidebar spaces do), so the board carries the status in the label of
+# the tabs it launched. Labels are plain text — an icon, but no color.
+TAB_STATUS_ICONS = {
+    "working": "●",
+    "blocked": "■",
+    "waiting": "■",
+    "done": "✔",
+    "idle": "○",
 }
 
 # ---------------------------------------------------------------- config / state
@@ -491,6 +504,85 @@ def find_session_pane(key: str) -> str | None:
         if isinstance(a, dict) and str(a.get("name") or "").startswith(prefix) and a.get("pane_id"):
             return str(a["pane_id"])
     return None
+
+
+def strip_status_icon(label: str) -> str:
+    """The label without its leading status icon (the part the board manages)."""
+    for icon in TAB_STATUS_ICONS.values():
+        if label.startswith(f"{icon} "):
+            return label[len(icon) + 1:]
+    return label
+
+
+def tab_label_for(base: str, status: str | None) -> str:
+    """The tab label for an issue's session: status icon + base, or the bare base."""
+    icon = TAB_STATUS_ICONS.get(status or "")
+    return f"{icon} {base}" if icon else base
+
+
+# When a tab holds several agents, the icon shows the most attention-worthy
+# one: stuck agents first, then activity, then a finished turn waiting to be
+# read, and a quiet prompt last.
+STATUS_PRIORITY = ("blocked", "waiting", "working", "done", "idle")
+
+
+def aggregate_status(statuses: list[str]) -> str | None:
+    """The most attention-worthy status among a tab's agents (None when none)."""
+    for status in STATUS_PRIORITY:
+        if status in statuses:
+            return status
+    return statuses[0] if statuses else None
+
+
+def sync_tab_labels(statuses: dict[str, str] | None, sessions: dict[str, str]) -> None:
+    """Mirror agent statuses onto the tab labels of the board's workspace.
+
+    Like the sidebar spaces, every tab shows the state of the agents it holds —
+    the sessions launched from cards, the companion, and any other agent the
+    user runs in a tab; a tab whose agents are gone loses its icon. Only the
+    leading icon is the board's: the rest of the label — the issue key set at
+    launch, or whatever the user renamed the tab to — is kept as is. Runs on
+    the badge tick. With statuses None (herdr unreachable) the labels keep
+    their last state, like the badges.
+    """
+    if statuses is None:
+        return
+    try:
+        panes = find_key(herdr("pane", "list"), "panes") or []
+        tabs = find_key(herdr("tab", "list"), "tabs") or []
+    except (subprocess.CalledProcessError, OSError):
+        return
+    pane_tabs = {str(p["pane_id"]): str(p.get("tab_id") or "")
+                 for p in panes if isinstance(p, dict) and p.get("pane_id")}
+    by_tab: dict[str, list[str]] = {}
+    for pane, status in statuses.items():
+        if tab_id := pane_tabs.get(pane):
+            by_tab.setdefault(tab_id, []).append(status)
+    session_tabs = {pane_tabs.get(pane): key for key, pane in sessions.items()}
+    # "w1:t2" belongs to workspace "w1"; tab rows also carry workspace_id.
+    workspace = (os.environ.get("HERDR_TAB_ID") or "").split(":")[0]
+    for tab in tabs:
+        if not isinstance(tab, dict) or not tab.get("tab_id"):
+            continue
+        tab_id = str(tab["tab_id"])
+        # Outside herdr the board's workspace is unknown; then only the tabs
+        # of the board's own sessions are touched.
+        if workspace:
+            if str(tab.get("workspace_id") or tab_id.split(":")[0]) != workspace:
+                continue
+        elif tab_id not in session_tabs:
+            continue
+        label = str(tab.get("label") or "")
+        base = strip_status_icon(label) or session_tabs.get(tab_id, "")
+        if not base:
+            continue
+        desired = tab_label_for(base, aggregate_status(by_tab.get(tab_id, [])))
+        if desired == label:
+            continue
+        try:
+            herdr("tab", "rename", tab_id, desired)
+        except (subprocess.CalledProcessError, OSError):
+            pass
 
 
 def claude_panes() -> list[dict[str, str]]:
@@ -996,8 +1088,11 @@ class BoardApp(App):
         statuses = agent_statuses()
         # Re-read the state files on every tick, so sessions another board
         # launched (or dropped) since ours started show up here too.
+        sessions = load_sessions()
+        # herdr calls block, so the tab labels sync here in the worker thread.
+        sync_tab_labels(statuses, sessions)
         self.call_from_thread(self.apply_badges, statuses,
-                              load_sessions(), load_claude_sessions())
+                              sessions, load_claude_sessions())
 
     def apply_badges(self, statuses: dict[str, str] | None,
                      sessions: dict[str, str], claude_sessions: dict[str, str]) -> None:
