@@ -1,6 +1,24 @@
+import subprocess
+
 import pytest
 
 import board
+
+
+@pytest.fixture(autouse=True)
+def isolated_herdr(monkeypatch):
+    """Keep the app tests off the real herdr server (and its real tabs).
+
+    The badge tick calls herdr for the tab-label sync; on a machine where
+    herdr actually runs, an unstubbed call would touch the developer's own
+    tabs. Tests that need herdr replace this stub with their own.
+    """
+
+    def unreachable(*args):
+        raise subprocess.CalledProcessError(1, ["herdr", *args])
+
+    monkeypatch.setattr(board, "herdr", unreachable)
+    monkeypatch.delenv("HERDR_TAB_ID", raising=False)
 
 
 ISSUES = [
