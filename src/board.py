@@ -119,6 +119,19 @@ MESSAGES: dict[str, dict[str, str]] = {
                        "ja": "{key}: 実行できるトランジションがありません"},
     "transitioned": {"en": "Updated the status of {key}",
                      "ja": "{key} のステータスを更新しました"},
+    "phase_label": {"en": "Phase label", "ja": "フェーズラベル"},
+    "pick_phase_label": {"en": "Toggle a phase label on [b]{key}[/b]:",
+                         "ja": "[b]{key}[/b] のフェーズラベルを付け外し:"},
+    "no_phase_labels": {
+        "en": "No phase labels configured; add `phase_labels` to config.toml.",
+        "ja": "フェーズラベルが未設定です。config.toml に `phase_labels` を追加してください。",
+    },
+    "phase_label_failed": {"en": "{key}: could not update the label: {error}",
+                           "ja": "{key}: ラベルを更新できませんでした: {error}"},
+    "phase_label_added": {"en": "Added {label} to {key}",
+                          "ja": "{key} に {label} を付けました"},
+    "phase_label_removed": {"en": "Removed {label} from {key}",
+                            "ja": "{key} から {label} を外しました"},
     "confirming": {"en": "Confirming the staged moves…", "ja": "仮移動を確定中です…"},
     "launching_already": {"en": "A session for {key} is already starting…",
                           "ja": "{key} のセッションを起動中です…"},
@@ -221,6 +234,31 @@ TAB_STATUS_ICONS = {
 
 # ---------------------------------------------------------------- config / state
 
+@dataclass(frozen=True)
+class PhaseLabel:
+    """A Jira label the board can toggle, and the short name shown on cards.
+
+    The Jira label is namespaced (`jb_…`) because labels are shared across every
+    project on the site; the card only shows `display` so the namespace does not
+    eat the card's width.
+    """
+
+    label: str
+    display: str
+
+    @classmethod
+    def parse(cls, raw: object) -> "PhaseLabel | None":
+        """One `phase_labels` entry, or None when it is not usable.
+
+        A bare string is accepted as shorthand for "show the label as it is".
+        """
+        if isinstance(raw, str):
+            return cls(raw, raw) if raw else None
+        if isinstance(raw, dict) and raw.get("label"):
+            return cls(str(raw["label"]), str(raw.get("display") or raw["label"]))
+        return None
+
+
 @dataclass
 class Config:
     site: str
@@ -229,6 +267,7 @@ class Config:
     jql: str
     exclude_statuses: list[str] = field(default_factory=list)
     status_order: list[str] = field(default_factory=list)
+    phase_labels: list[PhaseLabel] = field(default_factory=list)
     project_dirs: dict[str, str] = field(default_factory=dict)
 
     @classmethod
@@ -253,6 +292,8 @@ class Config:
             ),
             exclude_statuses=raw.get("exclude_statuses", []),
             status_order=raw.get("status_order", []),
+            phase_labels=[p for p in map(PhaseLabel.parse, raw.get("phase_labels", []))
+                          if p is not None],
             project_dirs=raw.get("project_dirs", {}),
         )
 
@@ -319,6 +360,7 @@ class Issue:
     issuetype: str
     created: str = ""  # YYYY-MM-DD
     duedate: str | None = None  # YYYY-MM-DD, None when the issue has no due date
+    labels: list[str] = field(default_factory=list)
 
 
 class Jira:
@@ -337,7 +379,8 @@ class Jira:
         r = self.http.post(
             "/rest/api/3/search/jql",
             json={"jql": self.cfg.jql, "maxResults": 100,
-                  "fields": ["summary", "status", "issuetype", "created", "duedate"]},
+                  "fields": ["summary", "status", "issuetype", "created", "duedate",
+                             "labels"]},
         )
         r.raise_for_status()
         issues = []
@@ -352,6 +395,7 @@ class Jira:
                 # created is a timestamp ("2026-08-13T20:53:14.000+0900"), duedate a plain date
                 created=(f.get("created") or "")[:10],
                 duedate=f.get("duedate") or None,
+                labels=list(f.get("labels") or []),
             ))
         return exclude_by_status(issues, self.cfg.exclude_statuses)
 
@@ -366,6 +410,17 @@ class Jira:
         r = self.http.get(f"/rest/api/3/issue/{key}/transitions")
         r.raise_for_status()
         return r.json().get("transitions", [])
+
+    def set_label(self, key: str, label: str, present: bool) -> None:
+        """Add or remove one label, leaving the issue's other labels alone.
+
+        The `update` verb sends the single change rather than the whole list, so
+        labels other people put on the issue survive.
+        """
+        verb = "add" if present else "remove"
+        r = self.http.put(f"/rest/api/3/issue/{key}",
+                          json={"update": {"labels": [{verb: label}]}})
+        r.raise_for_status()
 
     def do_transition(self, key: str, transition_id: str) -> None:
         r = self.http.post(f"/rest/api/3/issue/{key}/transitions",
@@ -440,6 +495,27 @@ def group_by_status(issues: list[Issue], order: list[str]) -> list[tuple[str, li
     statuses = sorted(groups, key=lambda s: (ranks.get(s.casefold(), len(ranks)),
                                              appearance.index(s)))
     return [(status, groups[status]) for status in statuses]
+
+
+def sort_by_phase_label(issues: list[Issue], phase_labels: list[PhaseLabel]) -> list[Issue]:
+    """Issues carrying a phase label first, in the configured order.
+
+    Sorting rather than grouping keeps this independent of `status_order`: the
+    status groups stay as they are and the labels only reorder the cards inside
+    one of them. Issues without a phase label keep the JQL order.
+    """
+    ranks = {p.label: i for i, p in enumerate(phase_labels)}
+
+    def rank(issue: Issue) -> int:
+        return min((ranks[name] for name in issue.labels if name in ranks),
+                   default=len(ranks))
+
+    return sorted(issues, key=rank)
+
+
+def phase_labels_of(issue: Issue, phase_labels: list[PhaseLabel]) -> list[PhaseLabel]:
+    """The configured phase labels the issue carries, in the configured order."""
+    return [p for p in phase_labels if p.label in issue.labels]
 
 
 def transitions_to_category(transitions: list[dict], target_category: str) -> list[dict]:
@@ -891,9 +967,10 @@ class Card(Static, can_focus=True):
         Binding("escape", "app.cancel_move", t("cancel_or_unfocus"), key_display="Esc"),
     ]
 
-    def __init__(self, issue: Issue):
+    def __init__(self, issue: Issue, phase_labels: list[PhaseLabel] | None = None):
         super().__init__()
         self.issue = issue
+        self.phase_labels = phase_labels or []
         self.agent_status: str | None = None
         self.pending_target: str | None = None  # target category (unconfirmed)
         self.render_card()
@@ -903,9 +980,11 @@ class Card(Static, can_focus=True):
         if self.agent_status is not None:
             badge = "  " + STATUS_ICONS.get(self.agent_status, f"[dim]{self.agent_status}[/]")
         pending = f"  [yellow]{t('pending_hint')}[/]" if self.pending_target else ""
+        phases = "".join(f"  [cyan]{p.display}[/]"
+                         for p in phase_labels_of(self.issue, self.phase_labels))
         dates = dates_line(self.issue)
-        self.update(f"[b]{self.issue.key}[/b] [dim]{self.issue.status}[/]{badge}{pending}\n"
-                    f"{self.issue.summary}" + (f"\n{dates}" if dates else ""))
+        self.update(f"[b]{self.issue.key}[/b] [dim]{self.issue.status}[/]{badge}{phases}"
+                    f"{pending}\n{self.issue.summary}" + (f"\n{dates}" if dates else ""))
 
     def on_mouse_down(self, event: events.MouseDown) -> None:
         self.focus()
@@ -972,6 +1051,29 @@ class TransitionPicker(ModalScreen[str | None]):
         self.dismiss(ev.option.id)
 
 
+class PhaseLabelPicker(ModalScreen[str | None]):
+    """Pick which phase label to toggle; returns the Jira label name."""
+
+    BINDINGS = [Binding("escape", "dismiss(None)", t("cancel"))]
+
+    def __init__(self, issue: Issue, phase_labels: list[PhaseLabel]):
+        super().__init__()
+        self.issue = issue
+        self.phase_labels = phase_labels
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="picker"):
+            yield Static(t("pick_phase_label", key=self.issue.key))
+            yield OptionList(*[
+                Option(f"{'[green]✔[/]' if p.label in self.issue.labels else ' '} {p.display}"
+                       f"  [dim]{p.label}[/]", id=p.label)
+                for p in self.phase_labels
+            ])
+
+    def on_option_list_option_selected(self, ev: OptionList.OptionSelected) -> None:
+        self.dismiss(ev.option.id)
+
+
 # ---------------------------------------------------------------- app
 
 class BoardApp(App):
@@ -988,6 +1090,7 @@ class BoardApp(App):
               margin: 0 1; padding: 0 1; }
     #picker { width: 60; height: auto; max-height: 20; border: thick $accent; background: $surface; padding: 1; }
     TransitionPicker { align: center middle; }
+    PhaseLabelPicker { align: center middle; }
     """
     BINDINGS = [
         Binding("r", "refresh", t("refresh")),
@@ -995,6 +1098,7 @@ class BoardApp(App):
         Binding("escape", "cancel_move", t("cancel_or_unfocus"), show=False),
         Binding("o", "open_browser", t("open_browser")),
         Binding("t", "transition", t("transition_status")),
+        Binding("l", "phase_label", t("phase_label")),
         Binding("c", "companion", t("companion")),
         Binding("down", "focus_next", t("next_card"), show=False),
         Binding("up", "focus_previous", t("prev_card"), show=False),
@@ -1077,8 +1181,8 @@ class BoardApp(App):
                 # mixes statuses (To Do / Done usually have just one).
                 if len(groups) > 1:
                     col.mount(StatusDivider(status))
-                for issue in group:
-                    col.mount(Card(issue))
+                for issue in sort_by_phase_label(group, self.cfg.phase_labels):
+                    col.mount(Card(issue, self.cfg.phase_labels))
         if (first := next(iter(self.query(Card)), None)) is not None:
             first.focus()
         self.update_badges()
@@ -1297,6 +1401,39 @@ class BoardApp(App):
         self.notify(t("transitioned", key=key))
         self.action_refresh()
 
+    # ---- phase labels
+
+    def action_phase_label(self) -> None:
+        """Put a phase label on the focused card, or take it off.
+
+        Phases that are not worth a workflow status of their own (and that would
+        have to be added to every project's workflow separately) live here
+        instead: a label is site-wide, so one name works across projects.
+        """
+        if not self.cfg.phase_labels:
+            self.notify(t("no_phase_labels"), severity="warning")
+            return
+        if card := self.focused_card():
+            self.run_phase_label(card)
+
+    @work(group="moves", exclusive=True)
+    async def run_phase_label(self, card: Card) -> None:
+        key = card.issue.key
+        label = await self.push_screen_wait(
+            PhaseLabelPicker(card.issue, self.cfg.phase_labels))
+        if not label:
+            return
+        present = label not in card.issue.labels
+        try:
+            await asyncio.to_thread(self.jira.set_label, key, label, present)
+        except Exception as e:  # noqa: BLE001
+            self.notify(t("phase_label_failed", key=key, error=e), severity="error")
+            return
+        self.notify(t("phase_label_added" if present else "phase_label_removed",
+                      key=key, label=label))
+        # Refreshing re-sorts the column, which is the point of the label.
+        self.action_refresh()
+
     # ---- companion session
 
     def action_companion(self) -> None:
@@ -1431,6 +1568,8 @@ def dump_text(cfg: Config, issues: list[Issue], statuses: dict[str, str],
         lines.append(f"\n== {title} ({len(column)}) ==")
         for issue in column:
             badge = f" <{status}>" if (status := badge_of(issue, statuses, sessions)) else ""
+            badge += "".join(f" <{p.display}>"
+                             for p in phase_labels_of(issue, cfg.phase_labels))
             lines.append(
                 f"  {issue.key} [{issue.status}]{badge} ({issue.issuetype}, "
                 f"{t('created_label')} {issue.created or '-'}, "
@@ -1447,6 +1586,7 @@ def dump_json(cfg: Config, issues: list[Issue], statuses: dict[str, str],
          "issues": [{"key": i.key, "summary": i.summary, "status": i.status,
                      "issuetype": i.issuetype, "created": i.created, "duedate": i.duedate,
                      "agent_status": badge_of(i, statuses, sessions) or None,
+                     "phase_labels": [p.display for p in phase_labels_of(i, cfg.phase_labels)],
                      "url": f"{cfg.site}/browse/{i.key}"}
                     for i in issues if i.category == cat]}
         for cat, title in CATEGORY_COLUMNS

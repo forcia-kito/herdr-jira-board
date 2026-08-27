@@ -34,6 +34,14 @@ api_token = ""
 # order, the rest follow in JQL result order.
 # status_order = ["In Review", "In Progress"]
 
+# Optional: labels `l` can put on a card and take off again, for a stage that
+# does not deserve a workflow status of its own. Cards carrying one sort to the
+# top of their status group, in the order declared here, and show `display`.
+# Namespace the label: Jira labels are shared with every project on the site.
+# [[phase_labels]]
+# label = "jb_verifying"
+# display = "verifying"
+
 # Optional: UI language, "en" or "ja". Omit to follow the system locale
 # (LC_ALL / LC_MESSAGES / LANG).
 # language = "en"
