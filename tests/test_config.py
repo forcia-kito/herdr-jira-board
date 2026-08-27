@@ -20,6 +20,7 @@ def test_load_minimal(tmp_path):
     assert "assignee = currentUser()" in cfg.jql  # default JQL
     assert cfg.exclude_statuses == []
     assert cfg.project_dirs == {}
+    assert cfg.preview is True  # the session preview starts on
 
 
 def test_load_full(tmp_path):
@@ -31,6 +32,11 @@ def test_load_full(tmp_path):
     assert cfg.jql == "project = X"
     assert cfg.exclude_statuses == ["Resolved"]
     assert cfg.project_dirs == {"X": "~/x"}
+
+
+def test_preview_can_start_off(tmp_path):
+    cfg = board.Config.load(write(tmp_path, BASE + 'api_token = "t"\npreview = false\n'))
+    assert cfg.preview is False
 
 
 def test_api_token_cmd(tmp_path):

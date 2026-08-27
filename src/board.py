@@ -11,7 +11,8 @@
   mirrors agent statuses onto the tab labels of the board's workspace
   (like the sidebar spaces)
 - Previews the focused card's session — its last Claude reply, read straight
-  from the transcript, so looking never costs the session a turn
+  from the transcript, so looking never costs the session a turn (`p` turns
+  the preview off when the board should stay compact)
 """
 
 from __future__ import annotations
@@ -139,6 +140,9 @@ MESSAGES: dict[str, dict[str, str]] = {
     "focus_failed": {"en": "{key}: cannot focus the session: {error}",
                      "ja": "{key}: セッションへ移動できません: {error}"},
     "preview_title": {"en": "{key} — last reply", "ja": "{key} の最後の返答"},
+    "toggle_preview": {"en": "Preview on / off", "ja": "返答プレビュー 表示/非表示"},
+    "preview_enabled": {"en": "Session preview on", "ja": "返答プレビューを表示します"},
+    "preview_disabled": {"en": "Session preview off", "ja": "返答プレビューを隠しました"},
     "launch_failed": {"en": "Failed to launch session: {error}", "ja": "セッション起動失敗: {error}"},
     "launched": {"en": "Launched a Claude session for {key}",
                  "ja": "{key} の Claude セッションを起動しました"},
@@ -269,6 +273,8 @@ class Config:
     status_order: list[str] = field(default_factory=list)
     phase_labels: list[PhaseLabel] = field(default_factory=list)
     project_dirs: dict[str, str] = field(default_factory=dict)
+    # Whether the session preview starts on; `p` toggles it for the session.
+    preview: bool = True
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Config":
@@ -295,6 +301,7 @@ class Config:
             phase_labels=[p for p in map(PhaseLabel.parse, raw.get("phase_labels", []))
                           if p is not None],
             project_dirs=raw.get("project_dirs", {}),
+            preview=bool(raw.get("preview", True)),
         )
 
 
@@ -1100,6 +1107,7 @@ class BoardApp(App):
         Binding("t", "transition", t("transition_status")),
         Binding("l", "phase_label", t("phase_label")),
         Binding("c", "companion", t("companion")),
+        Binding("p", "toggle_preview", t("toggle_preview")),
         Binding("down", "focus_next", t("next_card"), show=False),
         Binding("up", "focus_previous", t("prev_card"), show=False),
         Binding("q", "quit", t("quit")),
@@ -1111,6 +1119,9 @@ class BoardApp(App):
         self.jira = Jira(self.cfg)
         self.sessions = load_sessions()
         self.claude_sessions = load_claude_sessions()
+        # `p` overrides the config default for the rest of the session, so a
+        # config reload must not reach back in and undo it.
+        self.preview_enabled = self.cfg.preview
         self._launching: set[str] = set()
         self._moving = False
         self._opening_companion = False
@@ -1220,11 +1231,21 @@ class BoardApp(App):
     def on_descendant_focus(self, event: events.DescendantFocus) -> None:
         self.refresh_preview()
 
+    def action_toggle_preview(self) -> None:
+        """Turn the session preview off (and on again).
+
+        Off, the board is nothing but its columns — worth having when the
+        cards themselves are what you want on screen.
+        """
+        self.preview_enabled = not self.preview_enabled
+        self.refresh_preview()
+        self.notify(t("preview_enabled" if self.preview_enabled else "preview_disabled"))
+
     def refresh_preview(self) -> None:
         """Show the focused card's last session reply, or hide the pane."""
         card = self.focused_card()
         session = self.claude_sessions.get(card.issue.key, "") if card else ""
-        if not session:
+        if not self.preview_enabled or not session:
             self.query_one(Preview).display = False
             return
         self.load_preview(card.issue.key, session)
@@ -1240,7 +1261,9 @@ class BoardApp(App):
         if not card or card.issue.key != key:
             return  # focus moved on; the current card's own load owns the pane
         preview = self.query_one(Preview)
-        if not text:
+        # The reply is read in a worker, so the preview can have been turned
+        # off while this one was still loading.
+        if not text or not self.preview_enabled:
             preview.display = False
             return
         preview.border_title = t("preview_title", key=key)

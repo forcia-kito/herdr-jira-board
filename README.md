@@ -30,7 +30,8 @@ session for any card — with live session status badges on the board.
   board, read straight from the transcript — nothing is sent to the session,
   and you don't have to keep the state of every parallel issue in your head
   ([details](#the-session-preview)). `Enter` on a card that already has a
-  session goes to its tab
+  session goes to its tab; `p` turns the preview off when the columns alone
+  are what you want (`preview` config option for the starting state)
 - A column that mixes several statuses (typically In Progress) groups its
   cards per status under a divider; the order is configurable
   (`status_order`)
@@ -86,7 +87,7 @@ api_token = "<your API token>"
 
 See the comments in `config.toml.example` for all options
 (`api_token_cmd`, `jql`, `exclude_statuses`, `status_order`, `phase_labels`,
-`language`, `[project_dirs]`).
+`language`, `preview`, `[project_dirs]`).
 
 ## Usage
 
@@ -131,6 +132,7 @@ description = "Close other tabs"
 | `t` | Change the card's status (picker with every transition, same-column ones included) |
 | `l` | Put a phase label on the card, or take it off |
 | `c` | Open the companion session beside the board, or jump to it |
+| `p` | Turn the session preview off / on |
 | `q` | Quit |
 
 Cards can also be dragged between columns with the mouse; drops are staged the
@@ -215,6 +217,9 @@ interrupts work in progress. The preview refreshes on the same 5-second tick as
 the status badges, so a working session's latest report keeps up.
 
 Cards without a session, and sessions with no reply yet, show no preview.
+
+`p` turns the preview off, leaving the board to its columns alone, and on
+again. Set `preview = false` in the config to have it start off.
 
 ## Reading the board from Claude
 
