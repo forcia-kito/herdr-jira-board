@@ -42,6 +42,22 @@ api_token = ""
 # label = "jb_verifying"
 # display = "verifying"
 
+# Optional: label changes to make when a transition run from the board lands
+# on a status (compared case-insensitively). `add` puts labels on; `remove`
+# takes the listed ones off; `remove_except` — exclusive with `remove` —
+# takes off every label this file mentions other than the listed ones.
+# Labels other people put on an issue are never touched, and a rule never
+# removes a label it adds. Only transitions run from the board trigger rules;
+# a status changed in the Jira web UI does not (that is what Jira's own
+# automation is for).
+# [[status_labels]]
+# status = "In Review"
+# add = ["jb_verifying"]
+#
+# [[status_labels]]
+# status = "Done"
+# remove_except = ["jb_verifying"]
+
 # Optional: UI language, "en" or "ja". Omit to follow the system locale
 # (LC_ALL / LC_MESSAGES / LANG).
 # language = "en"

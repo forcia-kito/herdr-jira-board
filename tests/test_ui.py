@@ -117,6 +117,50 @@ async def test_confirm_runs_single_transition(app, monkeypatch):
         assert executed == [("KAN-1", "41")]
 
 
+def status_label_app(app, monkeypatch, to_name):
+    """Point every transition at `to_name` and record label updates."""
+    cfg = board.Config(
+        site="https://example.atlassian.net", email="you@example.com",
+        api_token="t", jql="jql",
+        status_labels=[board.StatusLabelRule(to_name, add=["jb_verifying"])])
+    # The refresh's config reload must hand back the same rules.
+    monkeypatch.setattr(board.Config, "load", classmethod(lambda cls, path=None: cfg))
+    app.cfg = cfg
+    transitions = [{"id": "41", "name": to_name,
+                    "to": {"name": to_name, "statusCategory": {"key": "done"}}}]
+    updates = []
+    monkeypatch.setattr(board.Jira, "transitions", lambda self, key: transitions)
+    monkeypatch.setattr(board.Jira, "do_transition", lambda self, key, tid: None)
+    monkeypatch.setattr(board.Jira, "update_labels",
+                        lambda self, key, add, remove: updates.append((key, add, remove)))
+    return updates
+
+
+@pytest.mark.asyncio
+async def test_a_move_applies_the_status_label_rules(app, monkeypatch):
+    updates = status_label_app(app, monkeypatch, "In Review")
+    async with app.run_test() as pilot:
+        await wait_for_cards(app, pilot)
+        await pilot.press("right")
+        await pilot.press("right")
+        await pilot.pause()
+        await pilot.press("enter")
+        await wait_for(pilot, lambda: updates)
+        assert updates == [("KAN-1", ["jb_verifying"], [])]
+
+
+@pytest.mark.asyncio
+async def test_t_applies_the_status_label_rules(app, monkeypatch):
+    updates = status_label_app(app, monkeypatch, "In Review")
+    async with app.run_test() as pilot:
+        await wait_for_cards(app, pilot)
+        await pilot.press("t")
+        await wait_for(pilot, lambda: isinstance(app.screen, board.TransitionPicker))
+        await pilot.press("enter")
+        await wait_for(pilot, lambda: updates)
+        assert updates == [("KAN-1", ["jb_verifying"], [])]
+
+
 @pytest.mark.asyncio
 async def test_staged_moves_accumulate(app):
     async with app.run_test() as pilot:

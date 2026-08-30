@@ -40,6 +40,10 @@ session for any card — with live session status badges on the board.
   site-wide, so one name works across every project without touching a
   workflow; labelled cards show the label and sort to the top of their status
   group ([details](#phase-labels))
+- **Status-linked labels** (`status_labels`) add and shed labels on their own
+  when a transition run from the board lands on a status — put "needs
+  verifying" on whatever reaches review, shed the board's other labels on
+  Done ([details](#status-linked-labels))
 - Session status badges (working / blocked / idle / done) on each card,
   refreshed every 5 seconds via `herdr agent list`
 - Each card shows its created date and due date; overdue is red, due within
@@ -87,7 +91,7 @@ api_token = "<your API token>"
 
 See the comments in `config.toml.example` for all options
 (`api_token_cmd`, `jql`, `exclude_statuses`, `status_order`, `phase_labels`,
-`language`, `preview`, `[project_dirs]`).
+`status_labels`, `language`, `preview`, `[project_dirs]`).
 
 ## Usage
 
@@ -180,6 +184,41 @@ project on the site, so a bare `verifying` would show up in everyone's
 autocomplete. Only `display` reaches the card, so the prefix costs no width.
 A plain string entry is also accepted (`phase_labels = ["verifying"]`) when you
 don't need a separate display name.
+
+### Status-linked labels
+
+Some label changes should just happen: whatever reaches review needs the
+"verify the effect later" label, and a card leaving the board through Done
+should drop the board's bookkeeping labels. `status_labels` declares those
+changes, and the board applies them whenever a transition it runs lands on
+the named status:
+
+```toml
+[[status_labels]]
+status = "In Review"
+add = ["jb_verifying"]
+
+[[status_labels]]
+status = "Done"
+remove_except = ["jb_verifying"]
+```
+
+`add` puts labels on. `remove` takes the listed ones off. `remove_except` is
+the "everything but" form: it takes off every label the config mentions —
+the `phase_labels` declarations plus the labels in `status_labels` rules —
+other than the listed ones. Labels other people put on the issue are never
+touched. Statuses compare case-insensitively, changes for one issue land in
+a single request, and the labels involved don't have to be phase labels
+(though the card only displays the ones that are).
+
+Two contradictions are rejected whole rather than half-applied: a rule
+carrying both `remove` and `remove_except`, and a rule adding and removing
+the same label. Across the rules for one status, an added label is never
+removed.
+
+The rules fire only for transitions run from the board (`←` `→` + `Enter`,
+or `t`). A status changed in the Jira web UI doesn't trigger them — rules
+that must hold everywhere are what Jira's own automation is for.
 
 ### The companion session
 

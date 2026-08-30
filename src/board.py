@@ -5,7 +5,8 @@
 """herdr-jira-board: Jira kanban board TUI.
 
 - Three status-category columns (To Do / In Progress / Done)
-- Move cards between columns via drag & drop or arrow keys (runs Jira transitions)
+- Move cards between columns via drag & drop or arrow keys (runs Jira transitions);
+  config-declared label changes (`status_labels`) apply when a transition lands
 - Enter launches a Claude session for the focused card in a new herdr tab
 - Polls `herdr agent list` to show session status badges on cards, and
   mirrors agent statuses onto the tab labels of the board's workspace
@@ -115,6 +116,10 @@ MESSAGES: dict[str, dict[str, str]] = {
         "ja": "{key}: トランジション失敗 (必須フィールドがある場合はブラウザで操作してください): {error}",
     },
     "moved": {"en": "Moved {key}", "ja": "{key} を移動しました"},
+    "status_labels_applied": {"en": "{key}: labels updated ({changes})",
+                              "ja": "{key}: ラベルを更新しました（{changes}）"},
+    "status_labels_failed": {"en": "{key}: could not update the labels: {error}",
+                             "ja": "{key}: ラベルを更新できません: {error}"},
     "transition_status": {"en": "Change status", "ja": "ステータス変更"},
     "no_transitions": {"en": "{key}: no transitions available",
                        "ja": "{key}: 実行できるトランジションがありません"},
@@ -268,6 +273,42 @@ class PhaseLabel:
 
 
 @dataclass
+class StatusLabelRule:
+    """Label changes to make when an issue lands on a status.
+
+    `remove_except` is the "everything but" form: it removes every label the
+    config manages (see `managed_labels`) other than the ones listed. A rule
+    carries either `remove` or `remove_except`, never both — and never removes
+    a label it adds, so the two sets cannot contradict each other.
+    """
+
+    status: str
+    add: list[str] = field(default_factory=list)
+    remove: list[str] = field(default_factory=list)
+    remove_except: list[str] | None = None
+
+    @classmethod
+    def parse(cls, raw: object) -> "StatusLabelRule | None":
+        """One `status_labels` entry, or None when it is not usable.
+
+        Contradictory rules — both removal forms at once, or a label both
+        added and removed — are dropped whole rather than half-applied.
+        """
+        if not isinstance(raw, dict) or not raw.get("status"):
+            return None
+        add = [str(n) for n in raw.get("add", []) if n]
+        remove = [str(n) for n in raw.get("remove", []) if n]
+        except_ = raw.get("remove_except")
+        if except_ is not None:
+            if remove:
+                return None
+            except_ = [str(n) for n in except_ if n]
+        if set(add) & set(remove):
+            return None
+        return cls(str(raw["status"]), add, remove, except_)
+
+
+@dataclass
 class Config:
     site: str
     email: str
@@ -276,6 +317,7 @@ class Config:
     exclude_statuses: list[str] = field(default_factory=list)
     status_order: list[str] = field(default_factory=list)
     phase_labels: list[PhaseLabel] = field(default_factory=list)
+    status_labels: list[StatusLabelRule] = field(default_factory=list)
     project_dirs: dict[str, str] = field(default_factory=dict)
     # Whether the session preview starts on; `p` toggles it for the session.
     preview: bool = True
@@ -304,6 +346,8 @@ class Config:
             status_order=raw.get("status_order", []),
             phase_labels=[p for p in map(PhaseLabel.parse, raw.get("phase_labels", []))
                           if p is not None],
+            status_labels=[r for r in map(StatusLabelRule.parse, raw.get("status_labels", []))
+                           if r is not None],
             project_dirs=raw.get("project_dirs", {}),
             preview=bool(raw.get("preview", True)),
         )
@@ -544,6 +588,43 @@ def transitions_to_category(transitions: list[dict], target_category: str) -> li
     """Transitions whose target status belongs to the given status category."""
     return [tr for tr in transitions
             if tr["to"]["statusCategory"]["key"] == target_category]
+
+
+def managed_labels(cfg: Config) -> set[str]:
+    """Every label the config itself mentions.
+
+    This is the universe `remove_except` removes from: labels other people put
+    on an issue are not the board's to take off, so a rule can only ever remove
+    what the config somewhere names.
+    """
+    names = {p.label for p in cfg.phase_labels}
+    for rule in cfg.status_labels:
+        names.update(rule.add, rule.remove, rule.remove_except or ())
+    return names
+
+
+def status_label_changes(cfg: Config, current: list[str],
+                         to_status: str) -> tuple[list[str], list[str]]:
+    """(labels to add, labels to remove) when an issue lands on `to_status`.
+
+    Statuses are compared case-insensitively, like `exclude_statuses`. A label
+    any matching rule adds is never removed. Both lists are filtered against
+    the labels the issue already has, so an issue in the right state costs no
+    request.
+    """
+    add: set[str] = set()
+    remove: set[str] = set()
+    target = to_status.casefold()
+    for rule in cfg.status_labels:
+        if rule.status.casefold() != target:
+            continue
+        add.update(rule.add)
+        remove.update(rule.remove)
+        if rule.remove_except is not None:
+            remove.update(managed_labels(cfg) - set(rule.remove_except) - set(rule.add))
+    remove -= add
+    have = set(current)
+    return sorted(add - have), sorted(remove & have)
 
 
 # ---------------------------------------------------------------- herdr helpers
@@ -1434,6 +1515,8 @@ class BoardApp(App):
             self.cancel_move(card)
             return False
         self.notify(t("moved", key=key))
+        chosen = next(tr for tr in candidates if tr["id"] == transition_id)
+        await self.apply_status_labels(card.issue, chosen["to"]["name"])
         return True
 
     def action_transition(self) -> None:
@@ -1467,7 +1550,26 @@ class BoardApp(App):
             self.notify(t("transition_failed", key=key, error=e), severity="error")
             return
         self.notify(t("transitioned", key=key))
+        chosen = next(tr for tr in transitions if tr["id"] == transition_id)
+        await self.apply_status_labels(card.issue, chosen["to"]["name"])
         self.action_refresh()
+
+    async def apply_status_labels(self, issue: Issue, to_status: str) -> None:
+        """Apply the config's `status_labels` rules after a transition.
+
+        The transition itself has already succeeded, so a failure here is
+        reported and swallowed rather than undoing anything.
+        """
+        add, remove = status_label_changes(self.cfg, issue.labels, to_status)
+        if not add and not remove:
+            return
+        try:
+            await asyncio.to_thread(self.jira.update_labels, issue.key, add, remove)
+        except Exception as e:  # noqa: BLE001
+            self.notify(t("status_labels_failed", key=issue.key, error=e), severity="error")
+            return
+        changes = ", ".join([f"+{n}" for n in add] + [f"-{n}" for n in remove])
+        self.notify(t("status_labels_applied", key=issue.key, changes=changes))
 
     # ---- phase labels
 
