@@ -96,9 +96,10 @@ async def test_column_shows_dividers_in_status_order(app):
 
 
 @pytest.mark.asyncio
-async def test_single_status_column_has_no_divider(app):
+async def test_single_status_column_still_gets_its_divider(app):
+    """The divider is where a card's status is read, so it is never left out."""
     async with app.run_test() as pilot:
         await wait_for_cards(app, pilot)
         todo = next(c for c in app.query(board.Column) if c.category == "new")
-        assert not list(todo.query(board.StatusDivider))
+        assert [d.status for d in todo.query(board.StatusDivider)] == ["To Do"]
         assert [c.issue.key for c in todo.query(board.Card)] == ["KAN-1"]
