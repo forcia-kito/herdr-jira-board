@@ -15,6 +15,10 @@ session for any card — with live session status badges on the board.
   By default the board shows your open issues plus issues completed within
   the last 7 days (older Done cards drop off automatically; customizable
   via the `jql` config option)
+- Each card names its issue type, so a bug, an improvement and a new feature
+  are told apart without opening the ticket. `issuetype_colors` gives a type
+  its own colour; a type left out stays dim, which keeps the everyday "Task"
+  quiet while bugs stand out
 - Move cards with drag & drop or `←` `→` keys, then confirm with `Enter`
   to run the Jira transition (a picker appears when several transitions apply).
   Staged moves pile up, so several cards can be moved one at a time and
@@ -32,8 +36,9 @@ session for any card — with live session status badges on the board.
   ([details](#the-session-preview)). `Enter` on a card that already has a
   session goes to its tab; `p` turns the preview off when the columns alone
   are what you want (`preview` config option for the starting state)
-- A column that mixes several statuses (typically In Progress) groups its
-  cards per status under a divider; the order is configurable
+- Cards are grouped per status under a divider (`── In Review ──`), in every
+  column — a column with a single status gets one too, so a card's status is
+  always the divider right above it; the order is configurable
   (`status_order`)
 - **Phase labels** (`l`) mark a stage that does not deserve a workflow status
   of its own — "verifying the effect after release", say. A Jira label is

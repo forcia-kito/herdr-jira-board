@@ -378,6 +378,9 @@ class Config:
     phase_labels: list[PhaseLabel] = field(default_factory=list)
     status_labels: list[StatusLabelRule] = field(default_factory=list)
     board_priority: list[BoardPriorityRule] = field(default_factory=list)
+    # Issue type name -> the colour its name is drawn in on the card. Types not
+    # named here stay dim, which is how "タスク" can be kept quiet.
+    issuetype_colors: dict[str, str] = field(default_factory=dict)
     project_dirs: dict[str, str] = field(default_factory=dict)
     # Whether the session preview starts on; `p` toggles it for the session.
     preview: bool = True
@@ -413,6 +416,8 @@ class Config:
             board_priority=[r for r in map(BoardPriorityRule.parse,
                                            raw.get("board_priority", []))
                             if r is not None],
+            issuetype_colors={str(k): str(v)
+                              for k, v in (raw.get("issuetype_colors") or {}).items() if v},
             project_dirs=raw.get("project_dirs", {}),
             preview=bool(raw.get("preview", True)),
         )
@@ -1305,6 +1310,16 @@ def due_style(duedate: str | None, today: date) -> str:
     return "yellow" if remaining <= DUE_SOON_DAYS else "dim"
 
 
+def kind_markup(issue: Issue, color: str) -> str:
+    """The issue type as the card draws it.
+
+    The status is not here: every column groups its cards under a status
+    divider, so repeating it on each card would say the same thing twice. A
+    type left out of `issuetype_colors` stays dim and keeps quiet.
+    """
+    return f"[{color}]{issue.issuetype}[/]" if color else f"[dim]{issue.issuetype}[/]"
+
+
 def dates_line(issue: Issue, today: date | None = None) -> str:
     """Created date, plus the due date colored by urgency. Empty when neither is set."""
     parts = []
@@ -1328,11 +1343,12 @@ class Card(Static, can_focus=True):
     ]
 
     def __init__(self, issue: Issue, phase_labels: list[PhaseLabel] | None = None,
-                 priority_tag: str = ""):
+                 priority_tag: str = "", issuetype_color: str = ""):
         super().__init__()
         self.issue = issue
         self.phase_labels = phase_labels or []
         self.priority_tag = priority_tag
+        self.issuetype_color = issuetype_color
         self.agent_status: str | None = None
         self.pending_target: str | None = None  # target category (unconfirmed)
         self.render_card()
@@ -1345,8 +1361,9 @@ class Card(Static, can_focus=True):
         pending = f"  [yellow]{t('pending_hint')}[/]" if self.pending_target else ""
         phases = "".join(f"  [cyan]{p.display}[/]"
                          for p in phase_labels_of(self.issue, self.phase_labels))
+        kind = kind_markup(self.issue, self.issuetype_color)
         dates = dates_line(self.issue)
-        self.update(f"[b]{self.issue.key}[/b]{tag} [dim]{self.issue.status}[/]{badge}{phases}"
+        self.update(f"[b]{self.issue.key}[/b]{tag} {kind}{badge}{phases}"
                     f"{pending}\n{self.issue.summary}" + (f"\n{dates}" if dates else ""))
 
     def on_mouse_down(self, event: events.MouseDown) -> None:
@@ -1386,10 +1403,16 @@ class Preview(VerticalScroll, can_focus=False):
 
 
 class StatusDivider(Static):
-    """A label separating the status groups inside a column."""
+    """A label separating the status groups inside a column.
+
+    The cards below it no longer carry their status, so this line is where the
+    status is read: the name is bold white and only the rules around it are
+    dimmed.
+    """
 
     def __init__(self, status: str):
-        super().__init__(f"[dim]── {status} ──[/]", classes="status-divider")
+        super().__init__(f"[dim]──[/] [b white]{status}[/] [dim]──[/]",
+                         classes="status-divider")
         self.status = status
 
 
@@ -1603,13 +1626,14 @@ class BoardApp(App):
                 column_issues = [i for i in column_issues if i.key not in hidden]
             groups = group_by_status(column_issues, self.cfg.status_order)
             for status, group in groups:
-                # The divider only earns its line when the column actually
-                # mixes statuses (To Do / Done usually have just one).
-                if len(groups) > 1:
-                    col.mount(StatusDivider(status))
+                # Every group gets its divider, single-status columns included:
+                # the divider is where a card's status is read, so leaving it
+                # out would hide the status of every card under it.
+                col.mount(StatusDivider(status))
                 for issue in sort_cards(group, self.cfg):
                     card = Card(issue, self.cfg.phase_labels,
-                                board_priority_tag(self.cfg, issue))
+                                board_priority_tag(self.cfg, issue),
+                                self.cfg.issuetype_colors.get(issue.issuetype, ""))
                     if issue.key in hidden:
                         card.add_class("hidden-card")
                     if issue.key in ghost_keys:

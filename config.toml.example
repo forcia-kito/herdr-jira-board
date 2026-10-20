@@ -85,6 +85,15 @@ api_token = ""
 # status = "Done"
 # remove_except = ["jb_verifying"]
 
+# Optional: the colour each issue type's name is drawn in on the card. A type
+# left out stays dim, which is how the everyday "Task" can be kept quiet while
+# bugs stand out. Values are Rich colour names or "#rrggbb". Issue type names
+# differ per Jira project, so write the ones your own projects use.
+# [issuetype_colors]
+# Bug = "red"
+# Improvement = "cyan"
+# "New Feature" = "green"
+
 # Optional: UI language, "en" or "ja". Omit to follow the system locale
 # (LC_ALL / LC_MESSAGES / LANG).
 # language = "en"
